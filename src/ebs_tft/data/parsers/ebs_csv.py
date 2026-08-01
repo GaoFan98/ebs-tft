@@ -20,6 +20,7 @@ class UnableToParseRowError(Exception):
     """
 
 
+# Value objects
 @attrs.frozen
 class RawEBSQuoteRow:
     """
@@ -101,6 +102,7 @@ class RawEBSDealRow:
     total_volume: int
 
 
+# Parsers
 def parse_quotes(*, path: Path) -> Iterator[RawEBSQuoteRow]:
     """
     Yield parsed Q (Quote) records from a single EBS Level 2 csv.gz file.
