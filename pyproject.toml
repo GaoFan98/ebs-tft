@@ -1,0 +1,168 @@
+# Core metadata and runtime dependencies
+
+[project]
+name = "ebs-tft"
+version = "0.1.0"
+
+requires-python = ">=3.12"
+description = "TFT analysis of EBS Level 2 forex order book data"
+
+# Runtime dependencies
+dependencies = [
+
+    # neuralforecast: primary TFT training engine.
+    "neuralforecast>=3.2.0",
+
+    # darts: used for backtesting and statistical baseline comparison.
+    # Its historical_forecasts() runs rolling-window evaluation automatically,
+    # which we need to compare l1 vs l1_l5 vs l1_l10 fairly.
+    "darts>=0.46.1",
+
+    # PyTorch: the deep learning engine under both neuralforecast and darts.
+    "torch>=2.6.0",
+
+    # lightning: the training loop abstraction used by both libraries.
+    "lightning>=2.6.5",
+
+    # optuna: hyperparameter optimization.
+    # Utilized to find the best TFT config (hidden size, attention heads,
+    # dropout, learning rate) across level groups.
+    "optuna>=4.0",
+    "optuna-integration>=4.0",
+
+    # Data processing
+    # polars: primary DataFrame engine for reading and resampling the raw .csv.gz files.
+    "polars>=1.0",
+    "pandas>=2.2",
+    "numpy>=2.0",
+
+    # pyarrow: used for reading and writing Parquet files.
+    # After we parse and resample the raw .csv.gz into 1-minute bars, we store them
+    # as Parquet in data/processed/. Parquet is columnar, compressed, and much faster
+    # to load for training than CSV. polars and pandas both read Parquet via pyarrow.
+    "pyarrow>=17.0",
+
+    # scikit-learn: preprocessing (StandardScaler, RobustScaler) and evaluation
+    # metrics (accuracy_score, classification_report for direction prediction).
+    # Also provides TimeSeriesSplit for cross-validation.
+    "scikit-learn>=1.6",
+
+    # scipy: statistical tests. Specifically we use the Diebold-Mariano test to check
+    # whether the difference in prediction accuracy between level groups is statistically
+    # significant — not just noise.
+    "scipy>=1.14",
+
+    # API and CLI serving 
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+
+    # pydantic: request/response schema validation in FastAPI.
+    "pydantic>=2.0",
+    "httpx>=0.28",
+
+    # Experiment tracking and visualization
+    # mlflow: experiment tracking and model registry.
+    # Run `uv run mlflow ui` to open the comparison dashboard.
+    "mlflow>=3.0",
+
+    # plotly: interactive charts.
+    # We use it to visualize: order book depth over time, model predictions vs actual,
+    # metric comparison across level groups, attention weight heatmaps.
+    # Output can be saved as HTML (interactive) or PNG (static via kaleido).
+    "plotly>=5.24",
+
+    # kaleido: required by plotly to export static images (PNG/PDF).
+    "kaleido>=1.0",
+
+    # Project tooling
+    # attrs: value objects / data classes.
+    # Use @attrs.frozen for immutable objects (OrderBookBar, DatasetSpec, etc.)
+    # Use @attrs.define for mutable objects
+    "attrs>=24.0",
+
+    # structlog: structured logging.
+    # Instead of plain text logs like "Error occurred", structlog outputs JSON:
+    # {"event": "parse_failed", "file": "20240102-EBS_LVL2_EUR_USD_0.csv.gz", "level": "error"}
+    # This makes logs searchable and parseable by any log aggregator.
+    "structlog>=24.0",
+
+    # typer: CLI framework built on top of Python's argparse.
+    # Used to build: `uv run python -m ebs_tft.interfaces.cli ingest`
+    "typer>=0.14",
+
+    # pyyaml: reads the YAML config files in configs/.
+    # configs/instruments.yaml, configs/model_defaults.yaml, configs/training.yaml
+    "pyyaml>=6.0",
+
+    "python-dotenv>=1.0",
+]
+
+# [project.optional-dependencies] — dev tools
+# These are NOT installed by default. Install with: uv sync --extra dev
+# Keeping them separate means production images stay lean.
+
+[project.optional-dependencies]
+dev = [
+    # pytest: the test runner. Per testing.md rules:
+    #   - tests/unit/        isolated, no DB/network, mock collaborators
+    #   - tests/integration/ multiple units, may use filesystem
+    #   - tests/functional/  end-to-end, only patch third-party
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+    "freezegun>=1.5",
+    "ruff>=0.8",
+    "mypy>=1.12",
+    # pytest-cov: coverage reports. Run with: uv run pytest --cov=src/ebs_tft
+    "pytest-cov>=6.0",
+]
+
+
+# [build-system] — tells uv/pip HOW to build the package
+# hatchling is a modern, minimal build backend. It reads [project] above
+# and knows how to package src/ebs_tft/ into an installable wheel.
+# We don't publish to PyPI, but this makes `uv run` work correctly by
+# installing the ebs_tft package in editable mode into the project.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# [tool.hatch.build.targets.wheel] — tells hatchling where the source is
+# Without this, hatchling looks for a package in the root directory.
+# With src/ layout, we must tell it to look inside src/.
+[tool.hatch.build.targets.wheel]
+packages = ["src/ebs_tft"]
+
+# Linting and formatting configuration
+[tool.ruff]
+# All source code lives in src/
+src = ["src"]
+# Maximum line length — 88 is the black default, widely accepted
+line-length = 88
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors (spacing, indentation)
+    "F",  # pyflakes (unused imports, undefined names)
+    "I",  # isort (import ordering)
+    "N",  # pep8 naming (class names, function names)
+    "UP", # pyupgrade (modernize Python syntax: f-strings, etc.)
+]
+
+# Static type checking configuration
+[tool.mypy]
+# strict = true enables all optional checks at once, including:
+#   - disallow_untyped_defs: every function must have type annotations
+#   - warn_return_any: can't return Any without explicit cast
+#   - no_implicit_optional: Optional[X] must be written explicitly
+strict = true
+python_version = "3.12"
+mypy_path = "src"
+ignore_missing_imports = true
+
+# Pytest configuration
+[tool.pytest.ini_options]
+# asyncio_mode = "auto" means any async test function is automatically treated
+# as an asyncio test — no need to add @pytest.mark.asyncio on every test
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Default flags: -v (verbose output), --tb=short (shorter tracebacks)
+addopts = "-v --tb=short"
