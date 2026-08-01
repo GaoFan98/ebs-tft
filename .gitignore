@@ -1,4 +1,31 @@
 .agents
+
+# Environment 
 .env
-models
-data/*
+.venv/
+
+# saved model weights
+models/
+
+# data folder 
+data/raw/
+data/processed/
+data/exports/
+
+# MLflow local tracking database and artifacts
+mlruns/
+
+# uv / Python
+.python-version
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
