@@ -77,7 +77,7 @@ def is_processed(
     return path.exists()
 
 
-def write_bars(path: Path, data: pl.DataFrame) -> None:
+def write_bars(*, path: Path, data: pl.DataFrame) -> None:
     """
     Write a polars DataFrame to a Parquet file at the given path.
 
@@ -100,7 +100,7 @@ def write_bars(path: Path, data: pl.DataFrame) -> None:
     )
 
 
-def read_bars(path: Path) -> pl.DataFrame:
+def read_bars(*, path: Path) -> pl.DataFrame:
     """
     Read a processed Parquet file and return it as a polars DataFrame.
 
