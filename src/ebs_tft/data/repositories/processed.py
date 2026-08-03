@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 
+import attrs
+
 logger = logging.getLogger(__name__)
 
-import attrs
 
 # Constants
 LEVEL_GROUPS: tuple[str, ...] = ("l1", "l1_l5", "l1_l10")
