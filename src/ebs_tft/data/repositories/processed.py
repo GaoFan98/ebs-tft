@@ -9,7 +9,7 @@ Directory structure as following:
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import attrs
@@ -124,5 +124,51 @@ def read_bars(*, path: Path) -> pl.DataFrame:
     return data
 
 
-def find_processed_files() -> Iterator[ProcessedDataFile]:
-    pass
+def find_processed_files(
+    *,
+    processed_dir: Path,
+    level_group: str,
+    instrument: str,
+    years: Sequence[int] | None = None,
+) -> Iterator[ProcessedDataFile]:
+    """
+    Yield ProcessedDataFile references for all Parquet files that match
+    given level_group and instrument, optionally filtered to specific years.
+
+    :param processed_dir: root of the processed data tree (e.g. data/processed/)
+    :param level_group: "l1", "l1_l5", or "l1_l10"
+    :param instrument: "EUR_USD", "EUR_JPY", or "USD_JPY"
+    :param years: if given, only files whose trading_date starts with one of
+                  these years are yielded. None means yield all years.
+    """
+    target_dir = processed_dir / level_group / instrument
+    if not target_dir.exists():
+        logger.info(
+            "No processed data directory found",
+            extra={"target_dir": str(target_dir)},
+        )
+        return
+
+    year_prefixes: tuple[str, ...] | None = (
+        tuple(str(y) for y in years) if years is not None else None
+    )
+
+    # Sort by filename (YYYYMMDD.parquet) for chronological order
+    for parquet_path in sorted(
+        target_dir.glob("*.parquet"), key=lambda path: path.name
+    ):
+        # get parquet without extension name
+        trading_date = parquet_path.stem
+
+        if year_prefixes is not None:
+            if not any(
+                trading_date.startswith(prefix=prefix) for prefix in year_prefixes
+            ):
+                continue
+
+        yield ProcessedDataFile(
+            path=parquet_path,
+            level_group=level_group,
+            instrument=instrument,
+            trading_date=trading_date,
+        )
