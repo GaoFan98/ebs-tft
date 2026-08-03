@@ -10,7 +10,10 @@ import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
+import attrs
+
 logger = logging.getLogger(__name__)
+
 
 # Constants
 KNOWN_INSTRUMENTS: tuple[str, ...] = ("EUR_USD", "EUR_JPY", "USD_JPY")
@@ -28,6 +31,7 @@ class UnableToScanDirectoryError(Exception):
 
 
 # Value objects
+@attrs.frozen
 class RawDataFile:
     """
     A reference to a single EBS Level 2 .csv.gz file on disk.
@@ -44,7 +48,7 @@ class RawDataFile:
 
 
 def find_raw_files(
-    *, data_dir: Path, instruments: Sequence[str], years: Sequence[str]
+    *, data_dir: Path, instruments: Sequence[str], years: Sequence[int]
 ) -> Iterator[RawDataFile]:
     """
     Yield RawDataFile references for all matching .csv.gz files found under
@@ -87,10 +91,10 @@ def _scan_year_dir(
     """
     try:
         entries = sorted(year_dir.glob("*.csv.gz"), key=lambda entry: entry.name)
-    except OSError as e:
+    except OSError as exc:
         raise UnableToScanDirectoryError(
-            f"Cannot list directory {year_dir}: {e}"
-        ) from e
+            f"Cannot list directory {year_dir}: {exc}"
+        ) from exc
 
     for file_path in entries:
         raw_data_file = _parse_filename(
