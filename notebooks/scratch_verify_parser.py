@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 
 from ebs_tft.data.parsers import ebs_csv
+from ebs_tft.data.repositories import raw_file
 
 path = Path("data/raw/2024/20240102-EBS_LVL2_EUR_USD_0.csv.gz")
 
@@ -44,3 +45,17 @@ print(
 # Check how many deal rows have no price (quiet periods)
 no_deal_price = [d for d in deals if d.deal_price is None]
 print(f"Deal rows with no price: {len(no_deal_price)}")
+
+
+# Test file finding
+files = list(
+    raw_file.find_raw_files(
+        data_dir=Path("data/raw"),
+        instruments=raw_file.KNOWN_INSTRUMENTS,
+        years=[2024],
+    )
+)
+print("\n=== FILE SCANNER ===")
+print(f"Total files found: {len(files)}")
+for f in files[:5]:
+    print(f"  {f.instrument}  {f.trading_date}  {f.path.name}")

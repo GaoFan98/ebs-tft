@@ -55,5 +55,84 @@ def find_raw_files(
     :param years: e.g. [2024] or [2023, 2024]
     :raises UnableToScanDirectory: if a year directory exists but cannot be read
     """
+    instrument_filter = set(instruments)
 
-    pass
+    for year in sorted(years):
+        year_dir = data_dir / str(year)
+
+        if not year_dir.exists():
+            logger.info(
+                "Year directory not found, skipping",
+                extra={"year_dir": str(year_dir)},
+            )
+            continue
+
+        if not year_dir.is_dir():
+            raise UnableToScanDirectoryError(
+                f"Expected a directory at {year_dir} but found a file"
+            )
+
+        yield from _scan_year_dir(
+            year_dir=year_dir, year=year, instrument_filter=instrument_filter
+        )
+
+
+def _scan_year_dir(
+    *, year_dir: Path, year: int, instrument_filter: set[str]
+) -> Iterator[RawDataFile]:
+    """
+    Scan single year directory and yield matched objects, sorting output by filename
+
+    :raises UnableToScanDirectory: if the directory cannot be listed
+    """
+    try:
+        entries = sorted(year_dir.glob("*.csv.gz"), key=lambda entry: entry.name)
+    except OSError as e:
+        raise UnableToScanDirectoryError(
+            f"Cannot list directory {year_dir}: {e}"
+        ) from e
+
+    for file_path in entries:
+        raw_data_file = _parse_filename(
+            file_path=file_path, year=year, instrument_filter=instrument_filter
+        )
+        if raw_data_file is None:
+            # Filename did not match pattern or instrument not in filter
+            logger.debug(
+                "Skipping file",
+                extra={"path": str(file_path)},
+            )
+            continue
+        yield raw_data_file
+
+
+def _parse_filename(
+    *, file_path: Path, year: int, instrument_filter: set[str]
+) -> RawDataFile | None:
+    """
+    Parse filename and return RawDataFile if matches, else None
+    """
+    matched = _FILENAME_PATTERN.match(file_path.name)
+    if matched is None:
+        return None
+
+    instrument = matched.group("instrument")
+    if instrument not in instrument_filter:
+        return None
+
+    trading_date = matched.group("trading_date")
+
+    # Year in the filename should match the directory year.
+    if not trading_date.startswith(str(year)):
+        logger.warning(
+            "File year mismatch: file is in wrong year directory",
+            extra={
+                "path": str(file_path),
+                "directory_year": year,
+                "filename_date": trading_date,
+            },
+        )
+
+    return RawDataFile(
+        path=file_path, instrument=instrument, year=year, trading_date=trading_date
+    )
