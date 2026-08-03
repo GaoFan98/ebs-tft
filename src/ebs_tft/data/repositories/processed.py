@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import attrs
+import polars as pl
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,51 @@ def is_processed(
     return path.exists()
 
 
-def write_bars() -> None:
-    pass
+def write_bars(path: Path, data: pl.DataFrame) -> None:
+    """
+    Write a polars DataFrame to a Parquet file at the given path.
+
+    :param path: destination path (use get_file_path() to construct it)
+    :param data: the processed bar DataFrame to persist
+    :raises UnableToWriteBarsError: if the file cannot be written
+    """
+    try:
+        # same as mkdir -p command
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data.write_parquet(path)
+    except Exception as exc:
+        raise UnableToWriteBarsError(
+            f"Cannot write processed bars to {path}: {exc}"
+        ) from exc
+
+    logger.debug(
+        "Wrote processed bars",
+        extra={"path": str(path), "rows": len(data), "columns": len(data.columns)},
+    )
 
 
-def read_bars() -> None:
-    pass
+def read_bars(path: Path) -> pl.DataFrame:
+    """
+    Read a processed Parquet file and return it as a polars DataFrame.
+
+    :param path: path to the .parquet file
+    :raises UnableToReadBarsError: if the file does not exist or cannot be read
+    """
+    if not path.exists():
+        raise UnableToReadBarsError(f"File not found: {path}")
+
+    try:
+        data = pl.read_parquet(path)
+    except Exception as exc:
+        raise UnableToReadBarsError(
+            f"Cannot read processed bars from {path}: {exc}"
+        ) from exc
+
+    logger.debug(
+        "Read processed bars",
+        extra={"path": str(path), "rows": len(data), "columns": len(data.columns)},
+    )
+    return data
 
 
 def find_processed_files() -> Iterator[ProcessedDataFile]:
