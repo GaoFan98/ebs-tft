@@ -4,7 +4,7 @@ Domain value objects and constants for the order book subdomain.
 
 from __future__ import annotations
 
-from enum import Enum
+import enum
 
 # Constants
 # num of order books depth level in EBS level 2 data
@@ -12,14 +12,14 @@ MAX_LEVELS: int = 10
 
 
 # Enums
-class RecordType(Enum):
+class RecordType(enum.StrEnum):
     # order book depth snapshot
     QUOTE = "Q"
     # executed trade
     DEAL = "D"
 
 
-class Instrument(Enum):
+class Instrument(enum.StrEnum):
     # target currency pairs
     EUR_USD = "EUR_USD"
     EUR_JPY = "EUR_JPY"
