@@ -8,7 +8,7 @@ from collections.abc import Iterator
 import polars as pl
 
 from ebs_tft.data.parsers.ebs_csv import RawEBSDealRow, RawEBSQuoteRow
-from ebs_tft.domain.orderbook import _models as models
+from ebs_tft.domain.orderbook import _models as m
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def build_bars(
     *,
     quotes: Iterator[RawEBSQuoteRow],
     deals: Iterator[RawEBSDealRow],
-    instrument: models.Instrument,
+    instrument: m.Instrument,
 ) -> pl.DataFrame:
     """
     Transform raw EBS rows for one trading day into 1-minute bar Dataframe.
@@ -58,7 +58,7 @@ def build_bars(
 
     # Add instrument as a column: needed when concatenating multiple instruments
     # for multi-series training.
-    bars = bars.with_columns(pl.lit(instrument.value).alias(models.COL_INSTRUMENT))
+    bars = bars.with_columns(pl.lit(instrument.value).alias(m.COL_INSTRUMENT))
 
     logger.debug(
         "Bars built",
@@ -111,11 +111,9 @@ def _quotes_to_polars(*, quotes: Iterator[RawEBSQuoteRow]) -> pl.DataFrame:
         df.with_columns(
             pl.col("timestamp_str")
             .str.to_datetime(format=_TIMESTAMP_FORMAT)
-            .alias(models.COL_TIMESTAMP)
+            .alias(m.COL_TIMESTAMP)
         )
-        .with_columns(
-            pl.col(models.COL_TIMESTAMP).dt.truncate("1m").alias("minute_bucket")
-        )
+        .with_columns(pl.col(m.COL_TIMESTAMP).dt.truncate("1m").alias("minute_bucket"))
         .drop("timestamp_str")
     )
 
@@ -158,11 +156,9 @@ def _deals_to_polars(*, deals: Iterator[RawEBSDealRow]) -> pl.DataFrame:
         df.with_columns(
             pl.col("timestamp_str")
             .str.to_datetime(format=_TIMESTAMP_FORMAT)
-            .alias(models.COL_TIMESTAMP)
+            .alias(m.COL_TIMESTAMP)
         )
-        .with_columns(
-            pl.col(models.COL_TIMESTAMP).dt.truncate("1m").alias("minute_bucket")
-        )
+        .with_columns(pl.col(m.COL_TIMESTAMP).dt.truncate("1m").alias("minute_bucket"))
         .drop("timestamp_str")
     )
 
@@ -213,19 +209,11 @@ def _resample_quotes(*, df: pl.DataFrame) -> pl.DataFrame:
     )
     # Rename columns to match naming convention
     bid_rename = {
-        f"price_{n}": models.bid_price_col(level=n)
-        for n in range(1, models.MAX_LEVELS + 1)
-    } | {
-        f"size_{n}": models.bid_size_col(level=n)
-        for n in range(1, models.MAX_LEVELS + 1)
-    }
+        f"price_{n}": m.bid_price_col(level=n) for n in range(1, m.MAX_LEVELS + 1)
+    } | {f"size_{n}": m.bid_size_col(level=n) for n in range(1, m.MAX_LEVELS + 1)}
     ask_rename = {
-        f"price_{n}": models.ask_price_col(level=n)
-        for n in range(1, models.MAX_LEVELS + 1)
-    } | {
-        f"size_{n}": models.ask_size_col(level=n)
-        for n in range(1, models.MAX_LEVELS + 1)
-    }
+        f"price_{n}": m.ask_price_col(level=n) for n in range(1, m.MAX_LEVELS + 1)
+    } | {f"size_{n}": m.ask_size_col(level=n) for n in range(1, m.MAX_LEVELS + 1)}
     bid_wide = bid_wide.rename(bid_rename)
     ask_wide = ask_wide.rename(ask_rename)
 
@@ -241,24 +229,24 @@ def _compute_quote_features(*, df: pl.DataFrame) -> pl.DataFrame:
     Adds: mid_price, spread, quote_imbalance.
     All three are computed from Level 1 only — best bid and best ask.
     """
-    b1 = models.bid_price_col(level=1)
-    a1 = models.ask_price_col(level=1)
-    bs1 = models.bid_size_col(level=1)
-    as1 = models.ask_size_col(level=1)
+    b1 = m.bid_price_col(level=1)
+    a1 = m.ask_price_col(level=1)
+    bs1 = m.bid_size_col(level=1)
+    as1 = m.ask_size_col(level=1)
 
     return df.with_columns(
         [
             # Mid-price: reference price for direction target labelling
-            ((pl.col(b1) + pl.col(a1)) / 2.0).alias(models.COL_MID_PRICE),
+            ((pl.col(b1) + pl.col(a1)) / 2.0).alias(m.COL_MID_PRICE),
             # Spread: market transaction cost. Wider spread = worse liquidity.
-            (pl.col(a1) - pl.col(b1)).alias(models.COL_SPREAD),
+            (pl.col(a1) - pl.col(b1)).alias(m.COL_SPREAD),
             # Quote imbalance from L1 sizes.
             # > 0: more bid liquidity -> passive sellers dominate -> bullish lean
             # < 0: more ask liquidity -> passive buyers dominate -> bearish lean
             (
                 (pl.col(bs1) - pl.col(as1)).cast(pl.Float64)
                 / (pl.col(bs1) + pl.col(as1)).cast(pl.Float64)
-            ).alias(models.COL_QUOTE_IMBALANCE),
+            ).alias(m.COL_QUOTE_IMBALANCE),
         ]
     )
 
@@ -280,7 +268,7 @@ def _compute_deal_features(*, deals_df: pl.DataFrame) -> pl.DataFrame:
         .group_by("minute_bucket")
         .agg(
             [
-                pl.sum("deal_size").alias(models.COL_BUY_VOLUME),
+                pl.sum("deal_size").alias(m.COL_BUY_VOLUME),
                 pl.sum("deal_count").alias("_buy_count"),
                 (pl.col("deal_price") * pl.col("deal_size")).sum().alias("_buy_pxs"),
             ]
@@ -292,7 +280,7 @@ def _compute_deal_features(*, deals_df: pl.DataFrame) -> pl.DataFrame:
         .group_by("minute_bucket")
         .agg(
             [
-                pl.sum("deal_size").alias(models.COL_SELL_VOLUME),
+                pl.sum("deal_size").alias(m.COL_SELL_VOLUME),
                 pl.sum("deal_count").alias("_sell_count"),
                 (pl.col("deal_price") * pl.col("deal_size")).sum().alias("_sell_pxs"),
             ]
@@ -303,8 +291,8 @@ def _compute_deal_features(*, deals_df: pl.DataFrame) -> pl.DataFrame:
     # Fill missing side with 0 (if a minute had only buys, sell_volume = 0)
     deal_bars = deal_bars.with_columns(
         [
-            pl.col(models.COL_BUY_VOLUME).fill_null(0),
-            pl.col(models.COL_SELL_VOLUME).fill_null(0),
+            pl.col(m.COL_BUY_VOLUME).fill_null(0),
+            pl.col(m.COL_SELL_VOLUME).fill_null(0),
             pl.col("_buy_count").fill_null(0),
             pl.col("_sell_count").fill_null(0),
             pl.col("_buy_pxs").fill_null(0.0),
@@ -313,27 +301,23 @@ def _compute_deal_features(*, deals_df: pl.DataFrame) -> pl.DataFrame:
     )
     deal_bars = deal_bars.with_columns(
         [
-            (pl.col("_buy_count") + pl.col("_sell_count")).alias(
-                models.COL_TRADE_COUNT
-            ),
+            (pl.col("_buy_count") + pl.col("_sell_count")).alias(m.COL_TRADE_COUNT),
             # Flow imbalance: (+1) = pure aggressive buying,
             #  (-1) = pure aggressive selling
             # null when no deals at all (denominator = 0 → polars returns null)
             (
-                (pl.col(models.COL_BUY_VOLUME) - pl.col(models.COL_SELL_VOLUME)).cast(
+                (pl.col(m.COL_BUY_VOLUME) - pl.col(m.COL_SELL_VOLUME)).cast(pl.Float64)
+                / (pl.col(m.COL_BUY_VOLUME) + pl.col(m.COL_SELL_VOLUME)).cast(
                     pl.Float64
                 )
-                / (pl.col(models.COL_BUY_VOLUME) + pl.col(models.COL_SELL_VOLUME)).cast(
-                    pl.Float64
-                )
-            ).alias(models.COL_DEAL_FLOW_IMBALANCE),
+            ).alias(m.COL_DEAL_FLOW_IMBALANCE),
             # VWAP across both sides: total(price × size) / total(size)
             (
                 (pl.col("_buy_pxs") + pl.col("_sell_pxs"))
-                / (pl.col(models.COL_BUY_VOLUME) + pl.col(models.COL_SELL_VOLUME)).cast(
+                / (pl.col(m.COL_BUY_VOLUME) + pl.col(m.COL_SELL_VOLUME)).cast(
                     pl.Float64
                 )
-            ).alias(models.COL_VWAP),
+            ).alias(m.COL_VWAP),
         ]
     ).drop(["_buy_count", "_sell_count", "_buy_pxs", "_sell_pxs"])
     return deal_bars.sort("minute_bucket")
@@ -351,13 +335,13 @@ def _join_features(
         # Quiet day: add null deal columns so schema is consistent
         return quote_bars.with_columns(
             [
-                pl.lit(None).cast(pl.Int64).alias(models.COL_BUY_VOLUME),
-                pl.lit(None).cast(pl.Int64).alias(models.COL_SELL_VOLUME),
-                pl.lit(None).cast(pl.Float64).alias(models.COL_DEAL_FLOW_IMBALANCE),
-                pl.lit(None).cast(pl.Int32).alias(models.COL_TRADE_COUNT),
-                pl.lit(None).cast(pl.Float64).alias(models.COL_VWAP),
+                pl.lit(None).cast(pl.Int64).alias(m.COL_BUY_VOLUME),
+                pl.lit(None).cast(pl.Int64).alias(m.COL_SELL_VOLUME),
+                pl.lit(None).cast(pl.Float64).alias(m.COL_DEAL_FLOW_IMBALANCE),
+                pl.lit(None).cast(pl.Int32).alias(m.COL_TRADE_COUNT),
+                pl.lit(None).cast(pl.Float64).alias(m.COL_VWAP),
             ]
-        ).rename({"minute_bucket": models.COL_TIMESTAMP})
+        ).rename({"minute_bucket": m.COL_TIMESTAMP})
     return quote_bars.join(deal_bars, on="minute_bucket", how="left").rename(
-        {"minute_bucket": models.COL_TIMESTAMP}
+        {"minute_bucket": m.COL_TIMESTAMP}
     )
