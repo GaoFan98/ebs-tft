@@ -113,3 +113,58 @@ COL_DIRECTION_TARGET: str = "direction_target"
 # Example:
 #   bid_price_col(level=1)  → "bid_price_l1"
 #   ask_size_col(level=10)  → "ask_size_l10"
+
+
+def bid_price_col(*, level: int) -> str:
+    """Column name for the mean bid price at the given depth level."""
+    return f"bid_price_l{level}"
+
+
+def ask_price_col(*, level: int) -> str:
+    """Column name for the mean ask price at the given depth level."""
+    return f"ask_price_l{level}"
+
+
+def bid_size_col(*, level: int) -> str:
+    """Column name for the mean bid size (notional) at the given depth level."""
+    return f"bid_size_l{level}"
+
+
+def ask_size_col(*, level: int) -> str:
+    """Column name for the mean ask size (notional) at the given depth level."""
+    return f"ask_size_l{level}"
+
+
+def all_bid_price_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
+    """Return all bid price column names from level 1 to max_level."""
+    return [bid_price_col(level=n) for n in range(1, max_level + 1)]
+
+
+def all_ask_price_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
+    """Return all ask price column names from level 1 to max_level."""
+    return [ask_price_col(level=n) for n in range(1, max_level + 1)]
+
+
+def all_bid_size_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
+    """Return all bid size column names from level 1 to max_level."""
+    return [bid_size_col(level=n) for n in range(1, max_level + 1)]
+
+
+def all_ask_size_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
+    """Return all ask size column names from level 1 to max_level."""
+    return [ask_size_col(level=n) for n in range(1, max_level + 1)]
+
+
+def all_level_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
+    """
+    Return ALL per-level column names (bid price, ask price, bid size, ask size)
+    for levels 1 through max_level, in a consistent order.
+    This is the full set used in the l1_l10 experiment group.
+    """
+    cols = []
+    for n in range(1, max_level + 1):
+        cols.append(bid_price_col(level=n))
+        cols.append(ask_price_col(level=n))
+        cols.append(bid_size_col(level=n))
+        cols.append(ask_size_col(level=n))
+    return cols
