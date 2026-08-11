@@ -5,6 +5,8 @@ from pathlib import Path
 
 from ebs_tft.data.parsers import ebs_csv
 from ebs_tft.data.repositories import raw_file
+from ebs_tft.domain.orderbook import _models as m
+from ebs_tft.domain.orderbook import operations as orderbook_ops
 
 path = Path("data/raw/2024/20240102-EBS_LVL2_EUR_USD_0.csv.gz")
 
@@ -59,3 +61,18 @@ print("\n=== FILE SCANNER ===")
 print(f"Total files found: {len(files)}")
 for f in files[:5]:
     print(f"  {f.instrument}  {f.trading_date}  {f.path.name}")
+
+
+quotes = ebs_csv.parse_quotes(path=path)
+deals = ebs_csv.parse_deals(path=path)
+bars = orderbook_ops.build_bars(
+    quotes=quotes,
+    deals=deals,
+    instrument=m.Instrument.EUR_USD,
+)
+
+print("\n=== BARS ===")
+print(f"Shape: {bars.shape}")
+print(f"Columns: {bars.columns}")
+print(bars.head(3))
+print(f"\nNull counts:\n{bars.null_count()}")
