@@ -1,5 +1,4 @@
-# notebooks/scratch_verify_parser.py
-
+import datetime
 from collections import Counter
 from pathlib import Path
 
@@ -7,6 +6,7 @@ from ebs_tft.data.parsers import ebs_csv
 from ebs_tft.data.repositories import raw_file
 from ebs_tft.domain.orderbook import _models as m
 from ebs_tft.domain.orderbook import operations as orderbook_ops
+from ebs_tft.domain.orderbook import queries
 
 path = Path("data/raw/2024/20240102-EBS_LVL2_EUR_USD_0.csv.gz")
 
@@ -76,3 +76,17 @@ print(f"Shape: {bars.shape}")
 print(f"Columns: {bars.columns}")
 print(bars.head(3))
 print(f"\nNull counts:\n{bars.null_count()}")
+
+
+bars = queries.load_bars(
+    processed_dir=Path("data/processed"),
+    level_group="l1",
+    instrument=m.Instrument.EUR_USD,
+    date_from=datetime.date(2024, 1, 1),
+    date_to=datetime.date(2024, 1, 3),
+)
+print("\n=== QUERIES ===")
+if bars.is_empty():
+    print("No bars loaded yet — run the exporter first")
+else:
+    print(f"Date range: {bars['timestamp'].min()} -> {bars['timestamp'].max()}")
