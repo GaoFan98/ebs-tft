@@ -4,7 +4,10 @@ Define domain values and column names for the order-book subdomain.
 
 from __future__ import annotations
 
+import datetime
 import enum
+
+import attrs
 
 MAX_LEVELS: int = 10
 
@@ -16,6 +19,20 @@ class RecordType(enum.StrEnum):
 
     QUOTE = "Q"
     DEAL = "D"
+
+
+class QuoteSide(enum.IntEnum):
+    """Identify the passive side represented by a price record."""
+
+    BID = 0
+    OFFER = 1
+
+
+class DealSide(enum.IntEnum):
+    """Identify the aggressor represented by an EBS deal record."""
+
+    GIVEN = 0
+    PAID = 1
 
 
 class Instrument(enum.StrEnum):
@@ -55,8 +72,40 @@ class Instrument(enum.StrEnum):
         return self.value.replace("_", "/")
 
 
+@attrs.frozen
+class RawQuote:
+    """Preserve one validated EBS Level 2 price-record row."""
+
+    timestamp: datetime.datetime
+    instrument: Instrument
+    side: QuoteSide
+    level: int
+    price: float | None
+    size: int
+    order_count: int
+    source_line: int
+
+
+@attrs.frozen
+class RawDeal:
+    """Preserve one validated EBS deal-record row without conflating volumes."""
+
+    timestamp: datetime.datetime
+    instrument: Instrument
+    side: DealSide
+    extremal_price: float
+    extremal_price_volume: int
+    deal_count: int
+    total_volume: int
+    source_line: int
+
+
+RawRecord = RawQuote | RawDeal
+
+
 COL_TIMESTAMP: str = "timestamp"
 COL_INSTRUMENT: str = "instrument"
+COL_TRADING_DATE: str = "trading_date"
 COL_MID_PRICE: str = "mid_price"
 COL_SPREAD: str = "spread"
 COL_QUOTE_IMBALANCE: str = "quote_imbalance"
@@ -64,7 +113,11 @@ COL_BUY_VOLUME: str = "buy_volume"
 COL_SELL_VOLUME: str = "sell_volume"
 COL_DEAL_FLOW_IMBALANCE: str = "deal_flow_imbalance"
 COL_TRADE_COUNT: str = "trade_count"
-COL_VWAP: str = "vwap"
+COL_EXTREMAL_PRICE_MEAN: str = "extremal_price_weighted_mean"
+COL_QUOTE_AGE_SECONDS: str = "quote_age_seconds"
+COL_QUOTE_UPDATE_COUNT: str = "quote_update_count"
+COL_BOOK_OBSERVED: str = "book_observed"
+COL_DEALS_OBSERVED: str = "deals_observed"
 COL_DIRECTION_TARGET: str = "direction_target"
 
 
@@ -108,6 +161,18 @@ def ask_size_col(*, level: int) -> str:
     return f"ask_size_l{level}"
 
 
+def bid_order_count_col(*, level: int) -> str:
+    """Return the bid order-count column for a validated depth level."""
+    _validate_level(level=level)
+    return f"bid_order_count_l{level}"
+
+
+def ask_order_count_col(*, level: int) -> str:
+    """Return the offer order-count column for a validated depth level."""
+    _validate_level(level=level)
+    return f"ask_order_count_l{level}"
+
+
 def all_bid_price_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
     """
     Return bid-price columns from level one through max_level.
@@ -148,6 +213,18 @@ def all_ask_size_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
     return [ask_size_col(level=level) for level in range(1, max_level + 1)]
 
 
+def all_bid_order_count_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
+    """Return bid order-count columns from level one through max_level."""
+    _validate_max_level(max_level=max_level)
+    return [bid_order_count_col(level=level) for level in range(1, max_level + 1)]
+
+
+def all_ask_order_count_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
+    """Return offer order-count columns from level one through max_level."""
+    _validate_max_level(max_level=max_level)
+    return [ask_order_count_col(level=level) for level in range(1, max_level + 1)]
+
+
 def all_level_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
     """
     Return every price and size column from level one through max_level.
@@ -163,9 +240,33 @@ def all_level_cols(*, max_level: int = MAX_LEVELS) -> list[str]:
                 ask_price_col(level=level),
                 bid_size_col(level=level),
                 ask_size_col(level=level),
+                bid_order_count_col(level=level),
+                ask_order_count_col(level=level),
             )
         )
     return columns
+
+
+def canonical_bar_columns(*, max_level: int = MAX_LEVELS) -> list[str]:
+    """Return the ordered canonical full-depth bar schema."""
+    return [
+        COL_TIMESTAMP,
+        COL_INSTRUMENT,
+        COL_TRADING_DATE,
+        *all_level_cols(max_level=max_level),
+        COL_MID_PRICE,
+        COL_SPREAD,
+        COL_QUOTE_IMBALANCE,
+        COL_BUY_VOLUME,
+        COL_SELL_VOLUME,
+        COL_TRADE_COUNT,
+        COL_DEAL_FLOW_IMBALANCE,
+        COL_EXTREMAL_PRICE_MEAN,
+        COL_QUOTE_AGE_SECONDS,
+        COL_QUOTE_UPDATE_COUNT,
+        COL_BOOK_OBSERVED,
+        COL_DEALS_OBSERVED,
+    ]
 
 
 def _validate_level(*, level: int) -> None:

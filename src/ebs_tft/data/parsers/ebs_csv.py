@@ -1,313 +1,279 @@
-"""
-Parse single EBS level 2 csv.gz file into typed records.
-"""
+"""Parse one compressed EBS Level 2 CSV in a single, accountable pass."""
 
 from __future__ import annotations
 
+import csv
+import datetime
 import gzip
-import logging
+import math
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Literal, overload
 
 import attrs
 
-logger = logging.getLogger(__name__)
+from ebs_tft.domain.orderbook import models
+
+_TIMESTAMP_FORMAT = "%Y/%m/%d %H:%M:%S.%f"
 
 
 class UnableToParseRowError(Exception):
-    """
-    Raised when a row cannot be parsed into a RawEBSRow.
-    """
-
-
-# Value objects
-@attrs.frozen
-class RawEBSQuoteRow:
-    """
-    Single parsed Q record from an EBS Level 2 .csv.gz file.
-    Represents one order book depth entry at one point in time.
-    Column layout (no header in file, 9 columns):
-        0: date         e.g. "2024/01/01"
-        1: time         e.g. "22:00:00.100"
-        2: symbol       e.g. "EUR/USD"
-        3: record_type  always "Q" for quote records
-        4: side         0 = Bid, 1 = Ask
-        5: level        1-10  (1 = best price)
-        6: price        may be None for initialization rows
-        7: size         notional in base currency
-        8: count        number of aggregated orders at this level
-    """
-
-    date: str
-    time: str
-    # currency pair
-    symbol: str
-    # always "Q" for quote records
-    record_type: str
-    # 0 = bid side (descending prices, level 1 = highest bid)
-    # 1 = ask side (ascending prices, level 1 = lowest ask)
-    side: int
-    # depth level: 1 is best (closest to mid), 10 is worst (furthest from mid)
-    level: int
-    # None on initialization rows (first snapshot of a session with no price yet)
-    price: float | None
-    # notional size available at this price level, in base currency units.
-    # e.g., 1000000 means 1 million EUR available at this bid level.
-    size: int
-    # number of individual orders aggregated into this depth level.
-    # EBS aggregates all orders at the same price into a single row.
-    count: int
+    """Indicate that a source row violates the documented parser contract."""
 
 
 @attrs.frozen
-class RawEBSDealRow:
-    """
-    Single parsed D record from an EBS Level 2 .csv.gz file.
-    Represents one actual executed trade during a 100ms time-slice.
-    Deal records are critical for direction prediction — they capture actual
-    order flow (who was aggressive: buyers or sellers), which is more informative
-    than passive quotes alone.
-    Column layout (no header in file, 10 columns):
-        0: date          e.g. "2024/01/01"
-        1: time          e.g. "22:39:07.900"
-        2: symbol        e.g. "EUR/USD"
-        3: record_type   always "D" for deal records
-        4: side          1 = highest paid (buy-initiated),
-                         0 = lowest given (sell-initiated)
-        5: (empty)       no depth level concept for deals
-        6: deal_price    price at which the trade executed (None if no deals this slice)
-        7: deal_size     volume traded at deal_price
-        8: deal_count    number of individual trades at deal_price
-        9: total_volume  total volume traded across all deals in this time-slice
-    """
+class ParseIssue:
+    """Describe one sanitized parse failure without retaining raw row content."""
 
-    date: str
-    time: str
-    # currency pair
-    symbol: str
-    # always "D" for deal records
-    record_type: str
-    # 1 = highest paid (an aggressive buyer lifted the ask — bullish)
-    # 0 = lowest given (an aggressive seller hit the bid — bearish)
-    # This is the key field for computing order flow imbalance.
-    side: int
-    # Price where the trade executed. None if no trade occurred this slice
-    # (some D rows are emitted even in quiet periods with empty price fields).
-    deal_price: float | None
-    # Volume traded at deal_price in base currency units
-    deal_size: int
-    # Number of individual trades that occurred at deal_price
-    deal_count: int
-    # Total notional volume across ALL deals in this 100ms slice.
-    # May be larger than deal_size if multiple price levels were hit.
-    total_volume: int
+    path: Path
+    line_number: int
+    reason: str
 
 
-# Parsers
-def parse_quotes(*, path: Path) -> Iterator[RawEBSQuoteRow]:
-    """
-    Yield parsed Q (Quote) records from a single EBS Level 2 csv.gz file.
-    Skips D records, empty lines, and malformed rows.
+@attrs.define
+class ParseAudit:
+    """Account for every physical input line consumed by the parser."""
 
-    :raises FileNotFoundError: if the file does not exist
-    :raises OSError: if the file cannot be opened or decompressed
-    """
-    logger.debug("Parsing quotes from EBS file", extra={"path": str(path)})
-    yield from _parse_file(path=path, target_record_type="Q")
+    physical_lines: int = 0
+    empty_lines: int = 0
+    quote_rows: int = 0
+    deal_rows: int = 0
+    error_rows: int = 0
+    issues: list[ParseIssue] = attrs.field(factory=list)
 
-
-def parse_deals(*, path: Path) -> Iterator[RawEBSDealRow]:
-    """
-    Yield parsed D (Deal) records from a single EBS Level 2 csv.gz file.
-    Skips Q records, empty lines, and malformed rows.
-
-    :raises FileNotFoundError: if the file does not exist
-    :raises OSError: if the file cannot be opened or decompressed
-    """
-    logger.debug("Parsing deals from EBS file", extra={"path": str(path)})
-    yield from _parse_file(path=path, target_record_type="D")
+    @property
+    def accounted_lines(self) -> int:
+        """Return the number of lines assigned to exactly one outcome."""
+        return self.empty_lines + self.quote_rows + self.deal_rows + self.error_rows
 
 
-def _parse_header(
-    *,
-    line: str,
-    expected_record_type: str,
-    expected_column_count: int,
-) -> list[str]:
-    """
-    Split a raw line and validate the parts that are common to ALL record types:
-
-    :raises UnableToParseRowError: on any validation failure
-    """
-    parts = line.split(",")
-
-    if len(parts) < 4:
-        raise UnableToParseRowError(f"Too few columns ({len(parts)}): {line!r}")
-    if parts[3] != expected_record_type:
-        raise UnableToParseRowError(
-            f"Expected {expected_record_type!r} record, got {parts[3]!r}: {line!r}"
-        )
-    if len(parts) != expected_column_count:
-        raise UnableToParseRowError(
-            f"Expected {expected_column_count} columns for {expected_record_type!r} "
-            f"record, got {len(parts)}: {line!r}"
-        )
-    return parts
-
-
-def _validate_side(*, side: int, line: str) -> None:
-    """
-    Side must be 0 (bid/sell-initiated) or 1 (ask/buy-initiated).
-
-    :raises UnableToParseRowError: if side is not 0 or 1
-    """
-    if side not in (0, 1):
-        raise UnableToParseRowError(f"Side must be 0 or 1, got {side}: {line!r}")
-
-
-@overload
-def _parse_file(
+def parse_rows(
     *,
     path: Path,
-    target_record_type: Literal["Q"],
-) -> Iterator[RawEBSQuoteRow]: ...
+    expected_instrument: models.Instrument,
+    expected_trading_date: datetime.date,
+    strict: bool = True,
+    audit: ParseAudit | None = None,
+    maximum_issues: int = 100,
+) -> Iterator[models.RawRecord]:
+    """Yield validated Q and D records in source order from one gzip member.
 
-
-@overload
-def _parse_file(
-    *,
-    path: Path,
-    target_record_type: Literal["D"],
-) -> Iterator[RawEBSDealRow]: ...
-
-
-def _parse_file(
-    *,
-    path: Path,
-    target_record_type: str,
-) -> Iterator[RawEBSQuoteRow | RawEBSDealRow]:
-    # validate if file exist first
-    if not path.exists():
+    Source timestamps are UTC. An EBS trading-date file can begin on the preceding
+    UTC calendar date because the FX trading date rolls at 17:00 New York.
+    """
+    if maximum_issues < 0:
+        raise ValueError("maximum_issues must be non-negative")
+    if not path.is_file():
         raise FileNotFoundError(f"EBS data file not found: {path}")
 
-    parse_fn = _parse_quote_line if target_record_type == "Q" else _parse_deal_line
+    parse_audit = audit if audit is not None else ParseAudit()
+    previous_timestamp: datetime.datetime | None = None
+    try:
+        with gzip.open(
+            path,
+            mode="rt",
+            encoding="utf-8",
+            errors="strict",
+            newline="",
+        ) as stream:
+            reader = csv.reader(stream, strict=True)
+            for line_number, columns in enumerate(reader, start=1):
+                parse_audit.physical_lines += 1
+                if not columns or all(not value for value in columns):
+                    parse_audit.empty_lines += 1
+                    continue
+                try:
+                    record = _parse_columns(
+                        columns=columns,
+                        line_number=line_number,
+                        expected_instrument=expected_instrument,
+                        expected_trading_date=expected_trading_date,
+                    )
+                    if (
+                        previous_timestamp is not None
+                        and record.timestamp < previous_timestamp
+                    ):
+                        raise UnableToParseRowError("timestamp is out of source order")
+                    previous_timestamp = record.timestamp
+                except UnableToParseRowError as exc:
+                    issue = ParseIssue(
+                        path=path, line_number=line_number, reason=str(exc)
+                    )
+                    parse_audit.error_rows += 1
+                    if len(parse_audit.issues) < maximum_issues:
+                        parse_audit.issues.append(issue)
+                    if strict:
+                        raise UnableToParseRowError(
+                            f"Unable to parse {path} at line {line_number}: {exc}"
+                        ) from exc
+                    continue
 
-    with gzip.open(path, "rt", encoding="utf-8") as file:
-        for line_num, raw_line in enumerate(file, start=1):
-            line = raw_line.strip()
-
-            if not line:
-                continue
-
-            try:
-                row = parse_fn(line=line)
-            except UnableToParseRowError:
-                logger.debug(
-                    "Skipping unparseable row",
-                    extra={
-                        "path": str(path),
-                        "line_number": line_num,
-                        "target_type": target_record_type,
-                    },
-                )
-                continue
-
-            yield row
+                if isinstance(record, models.RawQuote):
+                    parse_audit.quote_rows += 1
+                else:
+                    parse_audit.deal_rows += 1
+                yield record
+    except (UnicodeError, csv.Error) as exc:
+        raise UnableToParseRowError(f"Unable to decode EBS CSV file: {path}") from exc
 
 
-def _parse_quote_line(*, line: str) -> RawEBSQuoteRow:
-    """
-    Parse a single line and return a RawEBSQuoteRow.
+def _parse_columns(
+    *,
+    columns: list[str],
+    line_number: int,
+    expected_instrument: models.Instrument,
+    expected_trading_date: datetime.date,
+) -> models.RawRecord:
+    if len(columns) < 4:
+        raise UnableToParseRowError(f"expected at least 4 columns; got {len(columns)}")
+    try:
+        record_type = models.RecordType(columns[3])
+    except ValueError as exc:
+        raise UnableToParseRowError(f"unknown record marker {columns[3]!r}") from exc
 
-    :raises UnableToParseRowError: if not a Q record, wrong column count, or bad types
-    """
-    parts = _parse_header(
-        line=line,
-        expected_record_type="Q",
-        expected_column_count=9,
+    timestamp = _parse_timestamp(date_value=columns[0], time_value=columns[1])
+    allowed_dates = {
+        expected_trading_date,
+        expected_trading_date - datetime.timedelta(days=1),
+    }
+    if timestamp.date() not in allowed_dates:
+        raise UnableToParseRowError(
+            "row calendar date is outside its EBS trading-date file"
+        )
+    try:
+        instrument = models.Instrument.from_symbol(symbol=columns[2])
+    except ValueError as exc:
+        raise UnableToParseRowError(f"invalid symbol {columns[2]!r}") from exc
+    if instrument is not expected_instrument:
+        raise UnableToParseRowError(
+            f"symbol {columns[2]!r} does not match {expected_instrument.to_symbol()!r}"
+        )
+
+    if record_type is models.RecordType.QUOTE:
+        return _parse_quote(
+            columns=columns,
+            timestamp=timestamp,
+            instrument=instrument,
+            line_number=line_number,
+        )
+    return _parse_deal(
+        columns=columns,
+        timestamp=timestamp,
+        instrument=instrument,
+        line_number=line_number,
     )
-    (
-        date,
-        time_,
-        symbol,
-        record_type,
-        raw_side,
-        raw_level,
-        raw_price,
-        raw_size,
-        raw_count,
-    ) = parts
 
-    side = _parse_int(raw_side, field="side", line=line)
-    _validate_side(side=side, line=line)
 
-    return RawEBSQuoteRow(
-        date=date,
-        time=time_,
-        symbol=symbol,
-        record_type=record_type,
+def _parse_quote(
+    *,
+    columns: list[str],
+    timestamp: datetime.datetime,
+    instrument: models.Instrument,
+    line_number: int,
+) -> models.RawQuote:
+    if len(columns) != 9:
+        raise UnableToParseRowError(f"Q record requires 9 columns; got {len(columns)}")
+    side = _enum_int(value=columns[4], enum_type=models.QuoteSide, field="quote side")
+    level = _integer(value=columns[5], field="level")
+    if not 1 <= level <= models.MAX_LEVELS:
+        raise UnableToParseRowError(f"level must be in 1..{models.MAX_LEVELS}")
+    price = _optional_positive_float(value=columns[6], field="price")
+    size = _non_negative_integer(value=columns[7], field="size")
+    order_count = _non_negative_integer(value=columns[8], field="order count")
+    if price is None and (size != 0 or order_count != 0):
+        raise UnableToParseRowError("empty quote price requires zero size and count")
+    if price is not None and (size == 0 or order_count == 0):
+        raise UnableToParseRowError("priced quote requires positive size and count")
+    return models.RawQuote(
+        timestamp=timestamp,
+        instrument=instrument,
         side=side,
-        level=_parse_int(raw_level, field="level", line=line),
-        price=_parse_optional_float(raw_price, field="price", line=line),
-        size=_parse_int(raw_size, field="size", line=line),
-        count=_parse_int(raw_count, field="count", line=line),
+        level=level,
+        price=price,
+        size=size,
+        order_count=order_count,
+        source_line=line_number,
     )
 
 
-def _parse_deal_line(*, line: str) -> RawEBSDealRow:
-    """
-    Parse a single line and return a RawEBSDealRow.
-
-    :raises UnableToParseRowError: if not a D record, wrong column count, or bad types
-    """
-    parts = _parse_header(
-        line=line,
-        expected_record_type="D",
-        expected_column_count=10,
-    )
-    # Column 5 is always empty for D records (no level concept for deals)
-    (
-        date,
-        time_,
-        symbol,
-        record_type,
-        raw_side,
-        _,
-        raw_deal_price,
-        raw_deal_size,
-        raw_deal_count,
-        raw_total_volume,
-    ) = parts
-
-    side = _parse_int(raw_side, field="side", line=line)
-    _validate_side(side=side, line=line)
-
-    return RawEBSDealRow(
-        date=date,
-        time=time_,
-        symbol=symbol,
-        record_type=record_type,
+def _parse_deal(
+    *,
+    columns: list[str],
+    timestamp: datetime.datetime,
+    instrument: models.Instrument,
+    line_number: int,
+) -> models.RawDeal:
+    if len(columns) != 10:
+        raise UnableToParseRowError(f"D record requires 10 columns; got {len(columns)}")
+    if columns[5] != "":
+        raise UnableToParseRowError("D record level column must be empty")
+    side = _enum_int(value=columns[4], enum_type=models.DealSide, field="deal side")
+    price = _optional_positive_float(value=columns[6], field="deal price")
+    if price is None:
+        raise UnableToParseRowError("D record deal price must be present")
+    price_volume = _positive_integer(value=columns[7], field="deal-price volume")
+    deal_count = _positive_integer(value=columns[8], field="deal count")
+    total_volume = _positive_integer(value=columns[9], field="total volume")
+    if total_volume < price_volume:
+        raise UnableToParseRowError("total volume is below deal-price volume")
+    return models.RawDeal(
+        timestamp=timestamp,
+        instrument=instrument,
         side=side,
-        deal_price=_parse_optional_float(raw_deal_price, field="deal_price", line=line),
-        deal_size=_parse_int(raw_deal_size, field="deal_size", line=line),
-        deal_count=_parse_int(raw_deal_count, field="deal_count", line=line),
-        total_volume=_parse_int(raw_total_volume, field="total_volume", line=line),
+        extremal_price=price,
+        extremal_price_volume=price_volume,
+        deal_count=deal_count,
+        total_volume=total_volume,
+        source_line=line_number,
     )
 
 
-# Type conversion helpers
-def _parse_int(value: str, *, field: str, line: str) -> int:
+def _parse_timestamp(*, date_value: str, time_value: str) -> datetime.datetime:
+    try:
+        parsed = datetime.datetime.strptime(
+            f"{date_value} {time_value}", _TIMESTAMP_FORMAT
+        )
+    except ValueError as exc:
+        raise UnableToParseRowError("invalid UTC date/time") from exc
+    return parsed.replace(tzinfo=datetime.UTC)
+
+
+def _enum_int[SideT: (models.QuoteSide, models.DealSide)](
+    *, value: str, enum_type: type[SideT], field: str
+) -> SideT:
+    try:
+        return enum_type(_integer(value=value, field=field))
+    except ValueError as exc:
+        raise UnableToParseRowError(f"{field} must be 0 or 1") from exc
+
+
+def _integer(*, value: str, field: str) -> int:
     try:
         return int(value)
-    except ValueError:
-        raise UnableToParseRowError(f"Invalid {field} {value!r}: {line!r}")
+    except ValueError as exc:
+        raise UnableToParseRowError(f"invalid {field}") from exc
 
 
-def _parse_optional_float(value: str, *, field: str, line: str) -> float | None:
-    if value.strip() == "":
+def _non_negative_integer(*, value: str, field: str) -> int:
+    parsed = _integer(value=value, field=field)
+    if parsed < 0:
+        raise UnableToParseRowError(f"{field} must be non-negative")
+    return parsed
+
+
+def _positive_integer(*, value: str, field: str) -> int:
+    parsed = _integer(value=value, field=field)
+    if parsed <= 0:
+        raise UnableToParseRowError(f"{field} must be positive")
+    return parsed
+
+
+def _optional_positive_float(*, value: str, field: str) -> float | None:
+    if value == "":
         return None
     try:
-        return float(value)
-    except ValueError:
-        raise UnableToParseRowError(f"Invalid {field} {value!r}: {line!r}")
+        parsed = float(value)
+    except ValueError as exc:
+        raise UnableToParseRowError(f"invalid {field}") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise UnableToParseRowError(f"{field} must be finite and positive")
+    return parsed

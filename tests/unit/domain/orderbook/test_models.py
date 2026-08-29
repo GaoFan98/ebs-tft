@@ -48,10 +48,14 @@ class TestLevelColumns:
             "ask_price_l1",
             "bid_size_l1",
             "ask_size_l1",
+            "bid_order_count_l1",
+            "ask_order_count_l1",
             "bid_price_l2",
             "ask_price_l2",
             "bid_size_l2",
             "ask_size_l2",
+            "bid_order_count_l2",
+            "ask_order_count_l2",
         ]
 
     @pytest.mark.parametrize("level", [0, models.MAX_LEVELS + 1])

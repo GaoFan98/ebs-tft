@@ -15,6 +15,11 @@ from ebs_tft.domain.orderbook import models as orderbook_models
 
 SCHEMA_VERSION: int = 1
 SUPPORTED_BAR_FREQUENCIES: frozenset[str] = frozenset({"1m"})
+SUPPORTED_SOURCE_TIMEZONES: frozenset[str] = frozenset({"UTC"})
+SUPPORTED_SESSION_CALENDARS: frozenset[str] = frozenset({"EBS_FX_17_NEW_YORK"})
+SUPPORTED_FLAT_TARGET_POLICIES: frozenset[str] = frozenset(
+    {"three_class", "exclude_exact_flat", "exclude_neutral_band"}
+)
 
 
 class UnableToLoadConfigError(Exception):
@@ -236,6 +241,37 @@ def _parse_training(*, data: Mapping[str, object], project_dir: Path) -> Trainin
             "training.maximum_quote_staleness_seconds must be positive or null"
         )
 
+    source_timezone = _optional_str(
+        data=data, key="source_timezone", section="training"
+    )
+    if (
+        source_timezone is not None
+        and source_timezone not in SUPPORTED_SOURCE_TIMEZONES
+    ):
+        raise InvalidConfigError(
+            f"Unsupported training.source_timezone: {source_timezone!r}"
+        )
+    session_calendar = _optional_str(
+        data=data, key="session_calendar", section="training"
+    )
+    if (
+        session_calendar is not None
+        and session_calendar not in SUPPORTED_SESSION_CALENDARS
+    ):
+        raise InvalidConfigError(
+            f"Unsupported training.session_calendar: {session_calendar!r}"
+        )
+    flat_target_policy = _optional_str(
+        data=data, key="flat_target_policy", section="training"
+    )
+    if (
+        flat_target_policy is not None
+        and flat_target_policy not in SUPPORTED_FLAT_TARGET_POLICIES
+    ):
+        raise InvalidConfigError(
+            f"Unsupported training.flat_target_policy: {flat_target_policy!r}"
+        )
+
     return TrainingConfig(
         schema_version=schema_version,
         raw_data_dir=_resolve_project_path(
@@ -250,16 +286,10 @@ def _parse_training(*, data: Mapping[str, object], project_dir: Path) -> Trainin
         ),
         bar_frequency=bar_frequency,
         forecast_horizons_minutes=horizons,
-        source_timezone=_optional_str(
-            data=data, key="source_timezone", section="training"
-        ),
-        session_calendar=_optional_str(
-            data=data, key="session_calendar", section="training"
-        ),
+        source_timezone=source_timezone,
+        session_calendar=session_calendar,
         maximum_quote_staleness_seconds=maximum_staleness,
-        flat_target_policy=_optional_str(
-            data=data, key="flat_target_policy", section="training"
-        ),
+        flat_target_policy=flat_target_policy,
         random_seeds=random_seeds,
     )
 

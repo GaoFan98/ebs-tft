@@ -80,12 +80,6 @@ dependencies = [
     # Use @attrs.define for mutable objects
     "attrs==26.1.0",
 
-    # structlog: structured logging.
-    # Instead of plain text logs like "Error occurred", structlog outputs JSON:
-    # {"event": "parse_failed", "file": "20240102-EBS_LVL2_EUR_USD_0.csv.gz", "level": "error"}
-    # This makes logs searchable and parseable by any log aggregator.
-    "structlog==26.1.0",
-
     # typer: CLI framework built on top of Python's argparse.
     # Used to build: `uv run python -m ebs_tft.interfaces.cli ingest`
     "typer==0.27.0",

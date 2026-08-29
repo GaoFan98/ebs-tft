@@ -5,6 +5,7 @@ Discover and validate raw EBS data file references.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 import re
 from collections.abc import Iterator, Sequence
@@ -79,6 +80,20 @@ class RawDataFile:
         phase because reading every multi-gigabyte input is outside file discovery.
         """
         return f"{self.size_bytes}:{self.modified_time_ns}"
+
+
+def get_content_fingerprint(*, raw_data_file: RawDataFile) -> str:
+    """Return a strong fingerprint of the exact compressed source bytes."""
+    digest = hashlib.sha256()
+    try:
+        with raw_data_file.path.open(mode="rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise InvalidRawDataFileError(
+            f"Unable to fingerprint raw EBS file: {raw_data_file.path}"
+        ) from exc
+    return digest.hexdigest()
 
 
 def find_raw_files(

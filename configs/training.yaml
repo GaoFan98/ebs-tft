@@ -3,12 +3,11 @@ raw_data_dir: data/raw
 processed_data_dir: data/processed
 bar_frequency: 1m
 
-# These decisions remain deliberately unresolved until the raw schema and session
-# semantics are verified. Empty/null values prevent accidental model execution with
-# assumptions inherited from the obsolete plan.
+# Forecast and label choices remain pre-model research decisions. Source timestamps
+# are UTC; files are partitioned by the EBS trading date that rolls at 17:00 New York.
 forecast_horizons_minutes: []
-source_timezone: null
-session_calendar: null
-maximum_quote_staleness_seconds: null
+source_timezone: UTC
+session_calendar: EBS_FX_17_NEW_YORK
+maximum_quote_staleness_seconds: 60
 flat_target_policy: null
 random_seeds: []

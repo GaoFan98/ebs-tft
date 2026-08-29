@@ -131,6 +131,19 @@ class TestLoadProjectConfig:
         with pytest.raises(config.InvalidConfigError, match="must be positive"):
             config.load_project_config(config_dir=config_dir)
 
+    def test_load_project_config_rejects_a_non_utc_source_timezone(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = _write_config_dir(
+            parent=tmp_path,
+            training_yaml=_TRAINING_YAML.replace(
+                "source_timezone: null", "source_timezone: Asia/Tokyo"
+            ),
+        )
+
+        with pytest.raises(config.InvalidConfigError, match="source_timezone"):
+            config.load_project_config(config_dir=config_dir)
+
     def test_load_project_config_rejects_an_unsupported_schema_version(
         self, tmp_path: Path
     ) -> None:

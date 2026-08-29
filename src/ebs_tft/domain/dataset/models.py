@@ -1,6 +1,4 @@
-"""
-Define value objects and enums for the dataset subdomain.
-"""
+"""Define immutable, model-neutral dataset specifications."""
 
 from __future__ import annotations
 
@@ -13,136 +11,126 @@ import attrs
 from ebs_tft.domain.orderbook import models as orderbook_models
 
 
-class LevelGroup(enum.StrEnum):
-    """
-    Identify the legacy depth groups used by the current processed-data layout.
-
-    This enum remains until the canonical full-depth storage work replaces physical
-    per-depth files. New research depth generation is driven by configuration.
-    """
-
-    L1 = "l1"
-    L1_L5 = "l1_l5"
-    L1_L10 = "l1_l10"
-
-    def to_dir_name(self) -> str:
-        """
-        Return the processed-data directory name for this legacy group.
-        """
-        return self.value
-
-    def max_level(self) -> int:
-        """
-        Return the deepest order-book level included in this legacy group.
-        """
-        if self is LevelGroup.L1:
-            return 1
-        if self is LevelGroup.L1_L5:
-            return 5
-        return orderbook_models.MAX_LEVELS
-
-    def feature_columns(self) -> list[str]:
-        """
-        Return the ordered feature columns for this legacy level group.
-        """
-        max_level = self.max_level()
-        return [
-            orderbook_models.COL_TIMESTAMP,
-            orderbook_models.COL_INSTRUMENT,
-            orderbook_models.COL_MID_PRICE,
-            orderbook_models.COL_SPREAD,
-            *orderbook_models.all_bid_price_cols(max_level=max_level),
-            *orderbook_models.all_bid_size_cols(max_level=max_level),
-            *orderbook_models.all_ask_price_cols(max_level=max_level),
-            *orderbook_models.all_ask_size_cols(max_level=max_level),
-            orderbook_models.COL_QUOTE_IMBALANCE,
-            orderbook_models.COL_BUY_VOLUME,
-            orderbook_models.COL_SELL_VOLUME,
-            orderbook_models.COL_TRADE_COUNT,
-            orderbook_models.COL_DEAL_FLOW_IMBALANCE,
-            orderbook_models.COL_VWAP,
-        ]
-
-
 class Split(enum.StrEnum):
-    """
-    Identify chronological model-development partitions.
-    """
+    """Identify chronological model-development partitions."""
 
     TRAIN = "train"
     VALIDATION = "validation"
     TEST = "test"
 
 
+class SampleRole(enum.StrEnum):
+    """Distinguish model development from later external validation samples."""
+
+    DEVELOPMENT = "development"
+    EXTERNAL_VALIDATION = "external_validation"
+
+
+class FlatTargetPolicy(enum.StrEnum):
+    """Define an analysis choice made before evaluation results are inspected."""
+
+    THREE_CLASS = "three_class"
+    EXCLUDE_EXACT_FLAT = "exclude_exact_flat"
+    EXCLUDE_NEUTRAL_BAND = "exclude_neutral_band"
+
+
+@attrs.frozen
+class DepthSpec:
+    """Represent inclusive cumulative levels 1 through maximum_level."""
+
+    maximum_level: int
+
+    def __attrs_post_init__(self) -> None:
+        orderbook_models.all_level_cols(max_level=self.maximum_level)
+
+    def feature_columns(self) -> tuple[str, ...]:
+        """Return base features plus exactly the configured cumulative depth."""
+        return tuple(
+            orderbook_models.canonical_bar_columns(max_level=self.maximum_level)
+        )
+
+
+@attrs.frozen
+class DateRange:
+    """Represent one inclusive trading-date range."""
+
+    date_from: datetime.date
+    date_to: datetime.date
+
+    def __attrs_post_init__(self) -> None:
+        if self.date_from > self.date_to:
+            raise ValueError("date_from must not be after date_to")
+
+    def contains(self, *, date: datetime.date) -> bool:
+        """Return whether date lies in this inclusive range."""
+        return self.date_from <= date <= self.date_to
+
+
 @attrs.frozen
 class SplitSpec:
-    """
-    Define temporal boundaries for train, validation, and test partitions.
+    """Define ordered, non-overlapping trading-date development partitions."""
 
-    Boundary validation will be added with the leakage-safe dataset repair phase.
-    """
+    train: DateRange
+    validation: DateRange
+    test: DateRange
 
-    train_date_from: datetime.date
-    train_date_to: datetime.date
-    val_date_from: datetime.date
-    val_date_to: datetime.date
-    test_date_from: datetime.date
-    test_date_to: datetime.date
+    def __attrs_post_init__(self) -> None:
+        if not self.train.date_to < self.validation.date_from:
+            raise ValueError("train and validation ranges must be ordered and disjoint")
+        if not self.validation.date_to < self.test.date_from:
+            raise ValueError("validation and test ranges must be ordered and disjoint")
 
     @property
     def full_date_from(self) -> datetime.date:
-        """
-        Return the earliest configured date.
-        """
-        return self.train_date_from
+        return self.train.date_from
 
     @property
     def full_date_to(self) -> datetime.date:
-        """
-        Return the latest configured date.
-        """
-        return self.test_date_to
+        return self.test.date_to
 
-    def date_from_for(self, *, split: Split) -> datetime.date:
-        """
-        Return the inclusive start date for split.
-        """
+    def range_for(self, *, split: Split) -> DateRange:
+        """Return the date range assigned to split."""
         if split is Split.TRAIN:
-            return self.train_date_from
+            return self.train
         if split is Split.VALIDATION:
-            return self.val_date_from
-        return self.test_date_from
-
-    def date_to_for(self, *, split: Split) -> datetime.date:
-        """
-        Return the inclusive end date for split.
-        """
-        if split is Split.TRAIN:
-            return self.train_date_to
-        if split is Split.VALIDATION:
-            return self.val_date_to
-        return self.test_date_to
+            return self.validation
+        return self.test
 
 
 @attrs.frozen
 class DatasetSpec:
-    """
-    Define the inputs required by the current dataset-building implementation.
+    """Define one leakage-safe cumulative-depth dataset build."""
 
-    The future dataset repair replaces the legacy level group and row-based horizon
-    with a cumulative depth specification and an elapsed-time horizon.
-    """
-
-    level_group: LevelGroup
+    depth: DepthSpec
     instruments: tuple[orderbook_models.Instrument, ...]
     split_spec: SplitSpec
-    forecast_horizon_bars: int
-    context_length_bars: int
-    processed_dir: str
+    forecast_horizon: datetime.timedelta
+    context_length: datetime.timedelta
+    bar_frequency: datetime.timedelta
+    flat_target_policy: FlatTargetPolicy
+    neutral_threshold: float
+    processed_dir: Path
+    sample_role: SampleRole = SampleRole.DEVELOPMENT
 
-    @property
-    def processed_path(self) -> Path:
-        """
-        Return processed_dir as a filesystem path.
-        """
-        return Path(self.processed_dir)
+    def __attrs_post_init__(self) -> None:
+        if not self.instruments or len(set(self.instruments)) != len(self.instruments):
+            raise ValueError("instruments must be non-empty and unique")
+        if self.forecast_horizon <= datetime.timedelta(0):
+            raise ValueError("forecast_horizon must be positive")
+        if self.context_length <= datetime.timedelta(0):
+            raise ValueError("context_length must be positive")
+        if self.bar_frequency <= datetime.timedelta(0):
+            raise ValueError("bar_frequency must be positive")
+        if self.forecast_horizon % self.bar_frequency:
+            raise ValueError("forecast_horizon must be a multiple of bar_frequency")
+        if self.context_length % self.bar_frequency:
+            raise ValueError("context_length must be a multiple of bar_frequency")
+        if self.neutral_threshold < 0:
+            raise ValueError("neutral_threshold must be non-negative")
+        if (
+            self.flat_target_policy is not FlatTargetPolicy.EXCLUDE_NEUTRAL_BAND
+            and self.neutral_threshold != 0
+        ):
+            raise ValueError(
+                "neutral_threshold is only valid for a neutral-band policy"
+            )

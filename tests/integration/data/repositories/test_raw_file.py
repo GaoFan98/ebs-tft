@@ -111,3 +111,25 @@ class TestFindRawFiles:
                     years=(2024,),
                 )
             )
+
+
+class TestGetContentFingerprint:
+    def test_get_content_fingerprint_changes_with_source_content(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "source.csv.gz"
+        path.write_bytes(b"before")
+        stat = path.stat()
+        source = raw_file.RawDataFile(
+            path=path,
+            instrument="EUR_USD",
+            trading_date=datetime.date(2024, 1, 2),
+            size_bytes=stat.st_size,
+            modified_time_ns=stat.st_mtime_ns,
+        )
+        before = raw_file.get_content_fingerprint(raw_data_file=source)
+
+        path.write_bytes(b"after!")
+        after = raw_file.get_content_fingerprint(raw_data_file=source)
+
+        assert before != after
