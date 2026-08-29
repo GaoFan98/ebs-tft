@@ -1,0 +1,6 @@
+schema_version: 1
+instruments:
+  - EUR_USD
+  - EUR_JPY
+  - USD_JPY
+maximum_depth: 10

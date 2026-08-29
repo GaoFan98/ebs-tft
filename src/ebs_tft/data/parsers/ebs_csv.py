@@ -8,6 +8,7 @@ import gzip
 import logging
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Literal, overload
 
 import attrs
 
@@ -72,7 +73,8 @@ class RawEBSDealRow:
         1: time          e.g. "22:39:07.900"
         2: symbol        e.g. "EUR/USD"
         3: record_type   always "D" for deal records
-        4: side          1 = highest paid (buy-initiated), 0 = lowest given (sell-initiated)
+        4: side          1 = highest paid (buy-initiated),
+                         0 = lowest given (sell-initiated)
         5: (empty)       no depth level concept for deals
         6: deal_price    price at which the trade executed (None if no deals this slice)
         7: deal_size     volume traded at deal_price
@@ -162,6 +164,22 @@ def _validate_side(*, side: int, line: str) -> None:
     """
     if side not in (0, 1):
         raise UnableToParseRowError(f"Side must be 0 or 1, got {side}: {line!r}")
+
+
+@overload
+def _parse_file(
+    *,
+    path: Path,
+    target_record_type: Literal["Q"],
+) -> Iterator[RawEBSQuoteRow]: ...
+
+
+@overload
+def _parse_file(
+    *,
+    path: Path,
+    target_record_type: Literal["D"],
+) -> Iterator[RawEBSDealRow]: ...
 
 
 def _parse_file(

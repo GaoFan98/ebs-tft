@@ -16,7 +16,6 @@ data/exports/
 mlruns/
 
 # uv / Python
-.python-version
 __pycache__/
 *.pyc
 *.pyo

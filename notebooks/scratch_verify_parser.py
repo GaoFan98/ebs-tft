@@ -2,13 +2,14 @@ import datetime
 from collections import Counter
 from pathlib import Path
 
+from ebs_tft.application import config
 from ebs_tft.data.parsers import ebs_csv
 from ebs_tft.data.repositories import raw_file
-from ebs_tft.domain.orderbook import _models as m
+from ebs_tft.domain.orderbook import models, queries
 from ebs_tft.domain.orderbook import operations as orderbook_ops
-from ebs_tft.domain.orderbook import queries
 
 path = Path("data/raw/2024/20240102-EBS_LVL2_EUR_USD_0.csv.gz")
+project_config = config.load_project_config(config_dir=Path("configs"))
 
 # Test quote parsing
 print("=== QUOTES ===")
@@ -53,7 +54,9 @@ print(f"Deal rows with no price: {len(no_deal_price)}")
 files = list(
     raw_file.find_raw_files(
         data_dir=Path("data/raw"),
-        instruments=raw_file.KNOWN_INSTRUMENTS,
+        instruments=tuple(
+            instrument.value for instrument in project_config.instruments.instruments
+        ),
         years=[2024],
     )
 )
@@ -68,7 +71,7 @@ deals = ebs_csv.parse_deals(path=path)
 bars = orderbook_ops.build_bars(
     quotes=quotes,
     deals=deals,
-    instrument=m.Instrument.EUR_USD,
+    instrument=models.Instrument.EUR_USD,
 )
 
 print("\n=== BARS ===")
@@ -81,7 +84,7 @@ print(f"\nNull counts:\n{bars.null_count()}")
 bars = queries.load_bars(
     processed_dir=Path("data/processed"),
     level_group="l1",
-    instrument=m.Instrument.EUR_USD,
+    instrument=models.Instrument.EUR_USD,
     date_from=datetime.date(2024, 1, 1),
     date_to=datetime.date(2024, 1, 3),
 )

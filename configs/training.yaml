@@ -1,0 +1,14 @@
+schema_version: 1
+raw_data_dir: data/raw
+processed_data_dir: data/processed
+bar_frequency: 1m
+
+# These decisions remain deliberately unresolved until the raw schema and session
+# semantics are verified. Empty/null values prevent accidental model execution with
+# assumptions inherited from the obsolete plan.
+forecast_horizons_minutes: []
+source_timezone: null
+session_calendar: null
+maximum_quote_staleness_seconds: null
+flat_target_policy: null
+random_seeds: []

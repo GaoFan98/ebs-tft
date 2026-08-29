@@ -53,8 +53,11 @@ class ProcessedDataFile:
 
 
 def get_file_path(
-    *, processed_dir: Path, level_group: str, instrument=str, trading_date=str
+    *, processed_dir: Path, level_group: str, instrument: str, trading_date: str
 ) -> Path:
+    """
+    Return the legacy processed-data path for the supplied identity.
+    """
     return processed_dir / level_group / instrument / f"{trading_date}.parquet"
 
 
@@ -161,9 +164,7 @@ def find_processed_files(
         trading_date = parquet_path.stem
 
         if year_prefixes is not None:
-            if not any(
-                trading_date.startswith(prefix=prefix) for prefix in year_prefixes
-            ):
+            if not any(trading_date.startswith(prefix) for prefix in year_prefixes):
                 continue
 
         yield ProcessedDataFile(

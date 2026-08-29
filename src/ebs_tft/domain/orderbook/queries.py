@@ -10,7 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from ebs_tft.data.repositories import processed as processed_repo
-from ebs_tft.domain.orderbook import _models as m
+from ebs_tft.domain.orderbook import models
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def load_bars(
     *,
     processed_dir: Path,
     level_group: str,
-    instrument: m.Instrument,
+    instrument: models.Instrument,
     date_from: datetime.date | None = None,
     date_to: datetime.date | None = None,
 ) -> pl.DataFrame:
@@ -75,14 +75,14 @@ def load_bars(
         return pl.DataFrame()
 
     combined = pl.concat(frames, how="diagonal")
-    return combined.sort(m.COL_TIMESTAMP)
+    return combined.sort(models.COL_TIMESTAMP)
 
 
 def load_multi_instrument_bars(
     *,
     processed_dir: Path,
     level_group: str,
-    instruments: Sequence[m.Instrument],
+    instruments: Sequence[models.Instrument],
     date_from: datetime.date | None = None,
     date_to: datetime.date | None = None,
 ) -> pl.DataFrame:
@@ -139,14 +139,14 @@ def load_multi_instrument_bars(
     combined = pl.concat(all_frames, how="diagonal")
     # Sort by (instrument, timestamp) — neuralforecast expects all rows for
     # one series to be contiguous and chronologically ordered.
-    return combined.sort([m.COL_INSTRUMENT, m.COL_TIMESTAMP])
+    return combined.sort([models.COL_INSTRUMENT, models.COL_TIMESTAMP])
 
 
 def available_date_range(
     *,
     processed_dir: Path,
     level_group: str,
-    instrument: m.Instrument,
+    instrument: models.Instrument,
 ) -> tuple[str, str] | None:
     """
     Return the (earliest_date, latest_date) of available processed files

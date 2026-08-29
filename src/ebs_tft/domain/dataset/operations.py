@@ -7,14 +7,16 @@ import logging
 import pandas as pd
 import polars as pl
 
-from ebs_tft.domain.dataset._models import DatasetSpec, LevelGroup, Split
-from ebs_tft.domain.orderbook import _models as ob
+from ebs_tft.domain.dataset import models as dataset_models
+from ebs_tft.domain.orderbook import models as orderbook_models
 from ebs_tft.domain.orderbook import queries as ob_queries
 
 logger = logging.getLogger(__name__)
 
 
-def build_dataset(*, spec: DatasetSpec) -> dict[Split, pd.DataFrame]:
+def build_dataset(
+    *, spec: dataset_models.DatasetSpec
+) -> dict[dataset_models.Split, pd.DataFrame]:
     """
     Build train/validation/test DataFrames ready for neuralforecast.
 
@@ -49,13 +51,13 @@ def build_dataset(*, spec: DatasetSpec) -> dict[Split, pd.DataFrame]:
     bars = _fill_deal_nulls(df=bars)
     bars = _fill_book_nulls(df=bars)
     bars = _add_direction_target(df=bars, horizon=spec.forecast_horizon_bars)
-    bars = bars.drop_nulls(subset=[ob.COL_DIRECTION_TARGET])
+    bars = bars.drop_nulls(subset=[orderbook_models.COL_DIRECTION_TARGET])
 
     logger.info(
         "Dataset built",
         extra={
             "total_rows": len(bars),
-            "instruments": bars[ob.COL_INSTRUMENT].unique().to_list(),
+            "instruments": bars[orderbook_models.COL_INSTRUMENT].unique().to_list(),
         },
     )
 
@@ -65,7 +67,7 @@ def build_dataset(*, spec: DatasetSpec) -> dict[Split, pd.DataFrame]:
 # Helper functions
 
 
-def _load_bars(*, spec: DatasetSpec) -> pl.DataFrame:
+def _load_bars(*, spec: dataset_models.DatasetSpec) -> pl.DataFrame:
     """
     Loads the full date range across all splits in one call so that
     forward-filling and direction target computation work correctly at
@@ -81,7 +83,7 @@ def _load_bars(*, spec: DatasetSpec) -> pl.DataFrame:
 
 
 def _select_feature_columns(
-    *, df: pl.DataFrame, level_group: LevelGroup
+    *, df: pl.DataFrame, level_group: dataset_models.LevelGroup
 ) -> pl.DataFrame:
     """
     Select only the feature columns defined for this level group.
@@ -118,10 +120,10 @@ def _fill_deal_nulls(*, df: pl.DataFrame) -> pl.DataFrame:
     fill_with_zero = [
         c
         for c in [
-            ob.COL_BUY_VOLUME,
-            ob.COL_SELL_VOLUME,
-            ob.COL_TRADE_COUNT,
-            ob.COL_DEAL_FLOW_IMBALANCE,
+            orderbook_models.COL_BUY_VOLUME,
+            orderbook_models.COL_SELL_VOLUME,
+            orderbook_models.COL_TRADE_COUNT,
+            orderbook_models.COL_DEAL_FLOW_IMBALANCE,
         ]
         if c in df.columns
     ]
@@ -129,18 +131,18 @@ def _fill_deal_nulls(*, df: pl.DataFrame) -> pl.DataFrame:
     if fill_with_zero:
         df = df.with_columns([pl.col(c).fill_null(0) for c in fill_with_zero])
 
-    if ob.COL_VWAP in df.columns:
+    if orderbook_models.COL_VWAP in df.columns:
         df = df.with_columns(
-            pl.col(ob.COL_VWAP)
+            pl.col(orderbook_models.COL_VWAP)
             .forward_fill()
-            .over(ob.COL_INSTRUMENT)
-            .alias(ob.COL_VWAP)
+            .over(orderbook_models.COL_INSTRUMENT)
+            .alias(orderbook_models.COL_VWAP)
         )
-        if ob.COL_MID_PRICE in df.columns:
+        if orderbook_models.COL_MID_PRICE in df.columns:
             df = df.with_columns(
-                pl.col(ob.COL_VWAP)
-                .fill_null(pl.col(ob.COL_MID_PRICE))
-                .alias(ob.COL_VWAP)
+                pl.col(orderbook_models.COL_VWAP)
+                .fill_null(pl.col(orderbook_models.COL_MID_PRICE))
+                .alias(orderbook_models.COL_VWAP)
             )
 
     return df
@@ -170,18 +172,21 @@ def _fill_book_nulls(*, df: pl.DataFrame) -> pl.DataFrame:
     book_cols = [
         c
         for c in df.columns
-        if c not in (ob.COL_TIMESTAMP, ob.COL_INSTRUMENT)
+        if c not in (orderbook_models.COL_TIMESTAMP, orderbook_models.COL_INSTRUMENT)
         and c.startswith(("bid_", "ask_", "mid_", "spread", "quote_"))
     ]
 
     if book_cols:
         df = df.with_columns(
-            [pl.col(c).forward_fill().over(ob.COL_INSTRUMENT) for c in book_cols]
+            [
+                pl.col(c).forward_fill().over(orderbook_models.COL_INSTRUMENT)
+                for c in book_cols
+            ]
         )
 
-    if ob.COL_MID_PRICE in df.columns:
+    if orderbook_models.COL_MID_PRICE in df.columns:
         before = len(df)
-        df = df.drop_nulls(subset=[ob.COL_MID_PRICE])
+        df = df.drop_nulls(subset=[orderbook_models.COL_MID_PRICE])
         dropped = before - len(df)
         if dropped > 0:
             logger.debug(
@@ -205,26 +210,34 @@ def _add_direction_target(*, df: pl.DataFrame, horizon: int) -> pl.DataFrame:
     :param df: bars DataFrame, must contain COL_MID_PRICE and COL_INSTRUMENT
     :param horizon: H — how many bars ahead to look for the future price
     """
-    future_mid = pl.col(ob.COL_MID_PRICE).shift(-horizon).over(ob.COL_INSTRUMENT)
-    raw_direction = future_mid - pl.col(ob.COL_MID_PRICE)
+    future_mid = (
+        pl.col(orderbook_models.COL_MID_PRICE)
+        .shift(-horizon)
+        .over(orderbook_models.COL_INSTRUMENT)
+    )
+    raw_direction = future_mid - pl.col(orderbook_models.COL_MID_PRICE)
 
-    return df.with_columns(raw_direction.sign().alias(ob.COL_DIRECTION_TARGET))
+    return df.with_columns(
+        raw_direction.sign().alias(orderbook_models.COL_DIRECTION_TARGET)
+    )
 
 
 def _split_and_convert(
-    *, df: pl.DataFrame, spec: DatasetSpec
-) -> dict[Split, pd.DataFrame]:
+    *, df: pl.DataFrame, spec: dataset_models.DatasetSpec
+) -> dict[dataset_models.Split, pd.DataFrame]:
     """
     Filter the full DataFrame into train/val/test splits and convert to pandas.
     """
-    result: dict[Split, pd.DataFrame] = {}
+    result: dict[dataset_models.Split, pd.DataFrame] = {}
 
-    for split in Split:
+    for split in dataset_models.Split:
         date_from = spec.split_spec.date_from_for(split=split)
         date_to = spec.split_spec.date_to_for(split=split)
 
         split_df = df.filter(
-            pl.col(ob.COL_TIMESTAMP).dt.date().is_between(date_from, date_to)
+            pl.col(orderbook_models.COL_TIMESTAMP)
+            .dt.date()
+            .is_between(date_from, date_to)
         )
 
         if split_df.is_empty():
@@ -239,9 +252,9 @@ def _split_and_convert(
 
         split_df = split_df.rename(
             {
-                ob.COL_INSTRUMENT: "unique_id",
-                ob.COL_TIMESTAMP: "ds",
-                ob.COL_DIRECTION_TARGET: "y",
+                orderbook_models.COL_INSTRUMENT: "unique_id",
+                orderbook_models.COL_TIMESTAMP: "ds",
+                orderbook_models.COL_DIRECTION_TARGET: "y",
             }
         )
 
