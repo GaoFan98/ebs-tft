@@ -24,11 +24,11 @@ _TRAINING_YAML = """\
 schema_version: 1
 raw_data_dir: data/raw
 processed_data_dir: data/processed
-bar_frequency: 1m
-forecast_horizons_minutes: []
+state_interval_milliseconds: 100
+forecast_horizons_milliseconds: []
 source_timezone: null
 session_calendar: null
-maximum_quote_staleness_seconds: null
+maximum_quote_staleness_milliseconds: null
 flat_target_policy: null
 random_seeds: []
 """
@@ -104,17 +104,18 @@ class TestLoadProjectConfig:
         with pytest.raises(config.InvalidConfigError, match="maximum_depth"):
             config.load_project_config(config_dir=config_dir)
 
-    def test_load_project_config_rejects_an_unsupported_frequency(
+    def test_load_project_config_rejects_an_unsupported_state_interval(
         self, tmp_path: Path
     ) -> None:
         config_dir = _write_config_dir(
             parent=tmp_path,
             training_yaml=_TRAINING_YAML.replace(
-                "bar_frequency: 1m", "bar_frequency: 100ms"
+                "state_interval_milliseconds: 100",
+                "state_interval_milliseconds: 1000",
             ),
         )
 
-        with pytest.raises(config.InvalidConfigError, match="bar_frequency"):
+        with pytest.raises(config.InvalidConfigError, match="state_interval"):
             config.load_project_config(config_dir=config_dir)
 
     def test_load_project_config_rejects_a_non_positive_horizon(
@@ -123,8 +124,8 @@ class TestLoadProjectConfig:
         config_dir = _write_config_dir(
             parent=tmp_path,
             training_yaml=_TRAINING_YAML.replace(
-                "forecast_horizons_minutes: []",
-                "forecast_horizons_minutes: [0]",
+                "forecast_horizons_milliseconds: []",
+                "forecast_horizons_milliseconds: [0]",
             ),
         )
 

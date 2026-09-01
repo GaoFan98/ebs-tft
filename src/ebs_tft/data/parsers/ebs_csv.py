@@ -6,7 +6,7 @@ import csv
 import datetime
 import gzip
 import math
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 import attrs
@@ -54,7 +54,7 @@ def parse_rows(
     strict: bool = True,
     audit: ParseAudit | None = None,
     maximum_issues: int = 100,
-) -> Iterator[models.RawRecord]:
+) -> Generator[models.RawRecord]:
     """Yield validated Q and D records in source order from one gzip member.
 
     Source timestamps are UTC. An EBS trading-date file can begin on the preceding

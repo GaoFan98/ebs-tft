@@ -141,14 +141,12 @@ def _write(
 
 
 def _bars(*, trading_date: datetime.date = _TRADING_DATE) -> pl.DataFrame:
-    timestamps = [
-        datetime.datetime.combine(
-            trading_date - datetime.timedelta(days=1),
-            datetime.time(hour=22, minute=minute),
-            tzinfo=datetime.UTC,
-        )
-        for minute in (0, 1)
-    ]
+    start = datetime.datetime.combine(
+        trading_date - datetime.timedelta(days=1),
+        datetime.time(hour=22),
+        tzinfo=datetime.UTC,
+    )
+    timestamps = [start, start + datetime.timedelta(milliseconds=100)]
     return pl.DataFrame(
         {
             models.COL_TIMESTAMP: timestamps,

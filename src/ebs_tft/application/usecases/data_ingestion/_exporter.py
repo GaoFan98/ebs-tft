@@ -9,7 +9,8 @@ import logging
 from ebs_tft.application import config
 from ebs_tft.data.parsers import ebs_csv
 from ebs_tft.data.repositories import processed, raw_file
-from ebs_tft.domain.orderbook import models, operations
+from ebs_tft.domain.orderbook import models
+from ebs_tft.domain.pilot import operations as pilot_operations
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +27,15 @@ def export_file(
         instrument = models.Instrument.from_filename_part(
             instrument=raw_data_file.instrument
         )
-        staleness = project_config.training.maximum_quote_staleness_seconds
-        if staleness is None:
+        staleness_milliseconds = (
+            project_config.training.maximum_quote_staleness_milliseconds
+        )
+        if staleness_milliseconds is None:
             raise UnableToExportPartitionError(
-                "maximum_quote_staleness_seconds must be configured"
+                "maximum_quote_staleness_milliseconds must be configured"
             )
+        state_interval = project_config.training.state_interval_milliseconds
+        staleness_steps = staleness_milliseconds // state_interval
         config_fingerprint = _config_fingerprint(project_config=project_config)
         source_fingerprint = raw_file.get_content_fingerprint(
             raw_data_file=raw_data_file
@@ -52,7 +57,6 @@ def export_file(
             )
 
         parse_audit = ebs_csv.ParseAudit()
-        build_audit = operations.BuildAudit()
         records = ebs_csv.parse_rows(
             path=raw_data_file.path,
             expected_instrument=instrument,
@@ -60,13 +64,18 @@ def export_file(
             strict=True,
             audit=parse_audit,
         )
-        bars = operations.build_bars(
+        native_states = pilot_operations.build_native_states(
             records=records,
             instrument=instrument,
             trading_date=raw_data_file.trading_date,
+            grid_steps=None,
             maximum_depth=project_config.instruments.maximum_depth,
-            maximum_staleness_seconds=staleness,
-            audit=build_audit,
+            maximum_staleness_steps=staleness_steps,
+        )
+        bars = native_states.select(
+            models.canonical_bar_columns(
+                max_level=project_config.instruments.maximum_depth
+            )
         )
         if parse_audit.physical_lines != parse_audit.accounted_lines:
             raise UnableToExportPartitionError(
@@ -77,10 +86,13 @@ def export_file(
             "quote_rows": parse_audit.quote_rows,
             "deal_rows": parse_audit.deal_rows,
             "error_rows": parse_audit.error_rows,
-            "quote_snapshots": build_audit.quote_snapshots,
-            "quote_resets": build_audit.quote_resets,
-            "invalid_book_bars": build_audit.invalid_book_bars,
-            "stale_book_bars": build_audit.stale_book_bars,
+            "native_states": len(bars),
+            "observed_native_states": bars.filter(
+                bars[models.COL_BOOK_OBSERVED]
+            ).height,
+            "unobserved_native_states": bars.filter(
+                ~bars[models.COL_BOOK_OBSERVED]
+            ).height,
         }
         return processed.write_bars(
             processed_dir=project_config.training.processed_data_dir,
@@ -97,7 +109,7 @@ def export_file(
     except (
         ValueError,
         ebs_csv.UnableToParseRowError,
-        operations.InvalidBookStateError,
+        pilot_operations.InvalidNativeStateError,
         processed.UnableToWriteBarsError,
     ) as exc:
         raise UnableToExportPartitionError(
@@ -113,10 +125,12 @@ def export_file(
 
 def _config_fingerprint(*, project_config: config.ProjectConfig) -> str:
     payload = {
-        "bar_frequency": project_config.training.bar_frequency,
+        "state_interval_milliseconds": (
+            project_config.training.state_interval_milliseconds
+        ),
         "maximum_depth": project_config.instruments.maximum_depth,
-        "maximum_quote_staleness_seconds": (
-            project_config.training.maximum_quote_staleness_seconds
+        "maximum_quote_staleness_milliseconds": (
+            project_config.training.maximum_quote_staleness_milliseconds
         ),
         "session_calendar": project_config.training.session_calendar,
         "source_timezone": project_config.training.source_timezone,

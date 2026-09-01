@@ -31,15 +31,13 @@ dependencies = [
     "optuna-integration==4.9.0",
 
     # Data processing
-    # polars: primary DataFrame engine for reading and resampling the raw .csv.gz files.
+    # polars: primary DataFrame engine for native-state reconstruction and analysis.
     "polars==1.43.2",
     "pandas==2.3.3",
     "numpy==2.3.5",
 
     # pyarrow: used for reading and writing Parquet files.
-    # After we parse and resample the raw .csv.gz into 1-minute bars, we store them
-    # as Parquet in data/processed/. Parquet is columnar, compressed, and much faster
-    # to load for training than CSV. polars and pandas both read Parquet via pyarrow.
+    # Native 100 ms states can be stored as Parquet without time aggregation.
     "pyarrow==25.0.0",
 
     # scikit-learn: preprocessing (StandardScaler, RobustScaler) and evaluation
@@ -47,9 +45,7 @@ dependencies = [
     # Also provides TimeSeriesSplit for cross-validation.
     "scikit-learn==1.9.0",
 
-    # scipy: statistical tests. Specifically we use the Diebold-Mariano test to check
-    # whether the difference in prediction accuracy between level groups is statistically
-    # significant — not just noise.
+    # scipy: dependence-aware statistical analysis of observation-level losses.
     "scipy==1.18.0",
 
     # API and CLI serving 
@@ -109,6 +105,13 @@ dev = [
     # pytest-cov: coverage reports. Run with: uv run pytest --cov=src/ebs_tft
     "pytest-cov==7.1.0",
 ]
+pilot = [
+    # Local-only notebook interface. Model and data logic remains in src/ebs_tft.
+    "jupyterlab==4.6.3",
+]
+
+[project.scripts]
+ebs-tft = "ebs_tft.interfaces.cli.commands:main"
 
 
 # [build-system] — tells uv/pip HOW to build the package

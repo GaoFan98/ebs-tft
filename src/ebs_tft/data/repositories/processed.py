@@ -18,7 +18,7 @@ import polars as pl
 
 from ebs_tft.domain.orderbook import models
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _MANIFEST_NAME = "manifest.json"
 logger = logging.getLogger(__name__)
 
@@ -336,10 +336,10 @@ def _validate_frame(
         data[models.COL_TIMESTAMP].diff().drop_nulls().unique().to_list()
     )
     if any(
-        difference != datetime.timedelta(minutes=1)
+        difference != datetime.timedelta(milliseconds=100)
         for difference in timestamp_differences
     ):
-        raise ValueError("canonical timestamps must use a regular one-minute grid")
+        raise ValueError("canonical timestamps must use the native 100 ms grid")
     observed = data.filter(pl.col(models.COL_BOOK_OBSERVED))
     if not observed.is_empty():
         bid_l1 = models.bid_price_col(level=1)

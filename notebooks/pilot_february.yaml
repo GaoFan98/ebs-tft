@@ -1,0 +1,26 @@
+schema_version: 2
+raw_path: ../data/raw/2024/20240201-EBS_LVL2_EUR_USD_0.csv.gz
+instrument: EUR_USD
+trading_date: "2024-02-01"
+output_dir: pilot_february_outputs
+grid_steps: 60000
+state_interval_milliseconds: 100
+forecast_horizons_milliseconds: [100, 500, 1000, 5000, 10000, 30000]
+modeled_horizons_milliseconds: [5000, 10000, 30000]
+class_weighted_horizons_milliseconds: [5000, 10000]
+context_milliseconds: 10000
+maximum_staleness_milliseconds: 60000
+depths: [1, 10]
+models: [deeplob_direction, tft_direction]
+maximum_training_windows: 16384
+maximum_validation_windows: null
+maximum_test_windows: null
+maximum_epochs: 20
+early_stopping_patience: 3
+early_stopping_minimum_delta: 0.0001
+gradient_clip_norm: 1.0
+batch_size: 64
+learning_rate: 0.001
+hidden_size: 32
+random_seeds: [7, 19]
+device: auto

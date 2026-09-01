@@ -1,4 +1,5 @@
 schema_version: 1
 
-# Select the engine only after the baseline and model-adapter phase is approved.
-engine: null
+# Direction adapters use the shared PyTorch training protocol. NeuralForecast's
+# standard TFT remains a continuous forecasting engine, not this multiclass task.
+engine: pytorch_direction_adapters

@@ -44,14 +44,14 @@ class TestDatasetSpec:
     def test_dataset_spec_rejects_a_row_like_non_multiple_horizon(self) -> None:
         split_spec = _split_spec()
 
-        with pytest.raises(ValueError, match="multiple"):
+        with pytest.raises(ValueError, match="align"):
             models.DatasetSpec(
                 depth=models.DepthSpec(maximum_level=1),
                 instruments=(orderbook_models.Instrument.EUR_USD,),
                 split_spec=split_spec,
-                forecast_horizon=datetime.timedelta(seconds=90),
+                forecast_horizon=datetime.timedelta(milliseconds=150),
                 context_length=datetime.timedelta(minutes=5),
-                bar_frequency=datetime.timedelta(minutes=1),
+                state_interval=datetime.timedelta(milliseconds=100),
                 flat_target_policy=models.FlatTargetPolicy.THREE_CLASS,
                 neutral_threshold=0,
                 processed_dir=Path("processed"),

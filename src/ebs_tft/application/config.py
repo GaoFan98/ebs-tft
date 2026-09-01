@@ -14,7 +14,7 @@ import yaml
 from ebs_tft.domain.orderbook import models as orderbook_models
 
 SCHEMA_VERSION: int = 1
-SUPPORTED_BAR_FREQUENCIES: frozenset[str] = frozenset({"1m"})
+NATIVE_STATE_INTERVAL_MILLISECONDS: int = 100
 SUPPORTED_SOURCE_TIMEZONES: frozenset[str] = frozenset({"UTC"})
 SUPPORTED_SESSION_CALENDARS: frozenset[str] = frozenset({"EBS_FX_17_NEW_YORK"})
 SUPPORTED_FLAT_TARGET_POLICIES: frozenset[str] = frozenset(
@@ -61,11 +61,11 @@ class TrainingConfig:
     schema_version: int
     raw_data_dir: Path
     processed_data_dir: Path
-    bar_frequency: str
-    forecast_horizons_minutes: tuple[int, ...]
+    state_interval_milliseconds: int
+    forecast_horizons_milliseconds: tuple[int, ...]
     source_timezone: str | None
     session_calendar: str | None
-    maximum_quote_staleness_seconds: int | None
+    maximum_quote_staleness_milliseconds: int | None
     flat_target_policy: str | None
     random_seeds: tuple[int, ...]
 
@@ -75,10 +75,10 @@ class TrainingConfig:
         Test whether all evidence-dependent training choices have been resolved.
         """
         return bool(
-            self.forecast_horizons_minutes
+            self.forecast_horizons_milliseconds
             and self.source_timezone
             and self.session_calendar
-            and self.maximum_quote_staleness_seconds is not None
+            and self.maximum_quote_staleness_milliseconds is not None
             and self.flat_target_policy
             and self.random_seeds
         )
@@ -192,34 +192,42 @@ def _parse_training(*, data: Mapping[str, object], project_dir: Path) -> Trainin
             "schema_version",
             "raw_data_dir",
             "processed_data_dir",
-            "bar_frequency",
-            "forecast_horizons_minutes",
+            "state_interval_milliseconds",
+            "forecast_horizons_milliseconds",
             "source_timezone",
             "session_calendar",
-            "maximum_quote_staleness_seconds",
+            "maximum_quote_staleness_milliseconds",
             "flat_target_policy",
             "random_seeds",
         }
     )
     _validate_keys(data=data, expected=expected, section="training")
     schema_version = _schema_version(data=data, section="training")
-    bar_frequency = _required_str(data=data, key="bar_frequency", section="training")
-    if bar_frequency not in SUPPORTED_BAR_FREQUENCIES:
+    state_interval = _required_int(
+        data=data, key="state_interval_milliseconds", section="training"
+    )
+    if state_interval != NATIVE_STATE_INTERVAL_MILLISECONDS:
         raise InvalidConfigError(
-            f"Unsupported training.bar_frequency: {bar_frequency!r}"
+            "training.state_interval_milliseconds must preserve the verified "
+            f"native {NATIVE_STATE_INTERVAL_MILLISECONDS} ms interval"
         )
 
     horizons = _integer_tuple(
         data=data,
-        key="forecast_horizons_minutes",
+        key="forecast_horizons_milliseconds",
         section="training",
         allow_empty=True,
     )
     if any(horizon <= 0 for horizon in horizons):
         raise InvalidConfigError(
-            "training.forecast_horizons_minutes values must be positive"
+            "training.forecast_horizons_milliseconds values must be positive"
         )
-    _validate_unique(values=horizons, name="training.forecast_horizons_minutes")
+    if any(horizon % state_interval for horizon in horizons):
+        raise InvalidConfigError(
+            "training.forecast_horizons_milliseconds values must align to the "
+            "native state interval"
+        )
+    _validate_unique(values=horizons, name="training.forecast_horizons_milliseconds")
 
     random_seeds = _integer_tuple(
         data=data,
@@ -233,12 +241,12 @@ def _parse_training(*, data: Mapping[str, object], project_dir: Path) -> Trainin
 
     maximum_staleness = _optional_int(
         data=data,
-        key="maximum_quote_staleness_seconds",
+        key="maximum_quote_staleness_milliseconds",
         section="training",
     )
     if maximum_staleness is not None and maximum_staleness <= 0:
         raise InvalidConfigError(
-            "training.maximum_quote_staleness_seconds must be positive or null"
+            "training.maximum_quote_staleness_milliseconds must be positive or null"
         )
 
     source_timezone = _optional_str(
@@ -284,11 +292,11 @@ def _parse_training(*, data: Mapping[str, object], project_dir: Path) -> Trainin
             ),
             project_dir=project_dir,
         ),
-        bar_frequency=bar_frequency,
-        forecast_horizons_minutes=horizons,
+        state_interval_milliseconds=state_interval,
+        forecast_horizons_milliseconds=horizons,
         source_timezone=source_timezone,
         session_calendar=session_calendar,
-        maximum_quote_staleness_seconds=maximum_staleness,
+        maximum_quote_staleness_milliseconds=maximum_staleness,
         flat_target_policy=flat_target_policy,
         random_seeds=random_seeds,
     )

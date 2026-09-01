@@ -106,7 +106,7 @@ class DatasetSpec:
     split_spec: SplitSpec
     forecast_horizon: datetime.timedelta
     context_length: datetime.timedelta
-    bar_frequency: datetime.timedelta
+    state_interval: datetime.timedelta
     flat_target_policy: FlatTargetPolicy
     neutral_threshold: float
     processed_dir: Path
@@ -119,12 +119,12 @@ class DatasetSpec:
             raise ValueError("forecast_horizon must be positive")
         if self.context_length <= datetime.timedelta(0):
             raise ValueError("context_length must be positive")
-        if self.bar_frequency <= datetime.timedelta(0):
-            raise ValueError("bar_frequency must be positive")
-        if self.forecast_horizon % self.bar_frequency:
-            raise ValueError("forecast_horizon must be a multiple of bar_frequency")
-        if self.context_length % self.bar_frequency:
-            raise ValueError("context_length must be a multiple of bar_frequency")
+        if self.state_interval <= datetime.timedelta(0):
+            raise ValueError("state_interval must be positive")
+        if self.forecast_horizon % self.state_interval:
+            raise ValueError("forecast_horizon must align to state_interval")
+        if self.context_length % self.state_interval:
+            raise ValueError("context_length must align to state_interval")
         if self.neutral_threshold < 0:
             raise ValueError("neutral_threshold must be non-negative")
         if (

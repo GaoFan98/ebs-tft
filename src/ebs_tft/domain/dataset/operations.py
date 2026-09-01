@@ -127,7 +127,7 @@ def _assign_splits(
 def _add_target_with_exact_join(
     *, data: pl.DataFrame, spec: dataset_models.DatasetSpec
 ) -> pl.DataFrame:
-    duration = f"{int(spec.forecast_horizon.total_seconds())}s"
+    duration = f"{round(spec.forecast_horizon.total_seconds() * 1_000)}ms"
     join_keys = [
         orderbook_models.COL_INSTRUMENT,
         orderbook_models.COL_TRADING_DATE,
