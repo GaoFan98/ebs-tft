@@ -39,6 +39,8 @@ def write_latest(
                     "validation_log_loss": item.validation_log_loss,
                     "gradient_norm": item.gradient_norm,
                     "improved": item.improved,
+                    "validation_index": item.validation_index,
+                    "optimizer_step": item.optimizer_step,
                 }
                 for item in state.history
             ],
@@ -73,6 +75,12 @@ def read_latest(*, path: Path, fingerprint: str) -> model_domain.TrainingState |
                 validation_log_loss=_number(data=item, key="validation_log_loss"),
                 gradient_norm=_number(data=item, key="gradient_norm"),
                 improved=_boolean(data=item, key="improved"),
+                validation_index=_optional_integer(
+                    data=item, key="validation_index", default=1
+                ),
+                optimizer_step=_optional_integer(
+                    data=item, key="optimizer_step", default=0
+                ),
             )
         )
     return model_domain.TrainingState(
@@ -152,6 +160,13 @@ def _tensor(*, data: Mapping[str, object], key: str) -> torch.Tensor:
 
 def _integer(*, data: Mapping[str, object], key: str) -> int:
     value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise IncompatibleCheckpointError(f"checkpoint {key} must be an integer")
+    return value
+
+
+def _optional_integer(*, data: Mapping[str, object], key: str, default: int) -> int:
+    value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int):
         raise IncompatibleCheckpointError(f"checkpoint {key} must be an integer")
     return value

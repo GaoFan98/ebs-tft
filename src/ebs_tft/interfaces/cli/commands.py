@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from ebs_tft.application.usecases import pilot
+from ebs_tft.application.usecases import pilot, research_protocol
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -95,6 +95,70 @@ def local_multi_session(
     """Run day-aware training and later-session development validation."""
     specification = pilot.load_multi_session_specification(path=config)
     pilot.run_multi_session(specification=specification, replace_output=replace_output)
+
+
+@app.command("research-session-audit")
+def research_session_audit(
+    config: Path = typer.Option(
+        Path("notebooks/research_protocol.yaml"),
+        "--config",
+        help="Path to the exact-schema research-protocol YAML.",
+    ),
+    replace_output: bool = typer.Option(
+        False,
+        "--replace-output",
+        help="Delete the configured research output before auditing.",
+    ),
+) -> None:
+    """Audit all configured sessions and freeze chronological split identities."""
+    protocol = research_protocol.load_protocol(path=config)
+    research_protocol.run_session_audit(
+        protocol=protocol,
+        protocol_path=config.resolve(),
+        replace_output=replace_output,
+    )
+
+
+@app.command("research-baseline-gate")
+def research_baseline_gate(
+    config: Path = typer.Option(
+        Path("notebooks/research_protocol.yaml"),
+        "--config",
+        help="Path to the audited research-protocol YAML.",
+    ),
+    replace_output: bool = typer.Option(
+        False,
+        "--replace-output",
+        help="Delete prior rolling-baseline outputs before evaluation.",
+    ),
+) -> None:
+    """Evaluate rolling defensive baselines before neural GPU work."""
+    protocol = research_protocol.load_protocol(path=config)
+    research_protocol.run_baseline_gate(
+        protocol=protocol,
+        protocol_path=config.resolve(),
+        replace_output=replace_output,
+    )
+
+
+@app.command("research-model-protocol")
+def research_model_protocol(
+    config: Path = typer.Option(
+        Path("notebooks/research_protocol.yaml"),
+        "--config",
+        help="Path to the exact-schema research-protocol YAML.",
+    ),
+    replace_output: bool = typer.Option(
+        False,
+        "--replace-output",
+        help="Delete prior model-protocol verification output.",
+    ),
+) -> None:
+    """Verify and disclose model-adapter capabilities before GPU training."""
+    protocol = research_protocol.load_protocol(path=config)
+    research_protocol.run_model_protocol_verification(
+        protocol=protocol, replace_output=replace_output
+    )
 
 
 def main() -> None:

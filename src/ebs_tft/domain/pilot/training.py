@@ -65,6 +65,7 @@ class SessionWindowSummary:
     trading_date: datetime.date
     candidates: int
     selected: int
+    stride_steps: int
     timestamp_from: datetime.datetime
     timestamp_to: datetime.datetime
 
@@ -231,17 +232,23 @@ def combine_sessions(
     context_steps: int,
     horizon_steps: int,
     maximum_windows: int | None,
+    stride_steps: int = 1,
 ) -> PreparedCorpus:
     """Concatenate sessions while selecting windows inside each boundary."""
     if not sessions:
         raise ValueError("at least one session is required")
-    local_candidates = tuple(
+    if isinstance(stride_steps, bool) or stride_steps <= 0:
+        raise ValueError("stride_steps must be a positive integer")
+    raw_local_candidates = tuple(
         _candidate_indices(
             session=session,
             context_steps=context_steps,
             horizon_steps=horizon_steps,
         )
         for session in sessions
+    )
+    local_candidates = tuple(
+        candidates[::stride_steps] for candidates in raw_local_candidates
     )
     offsets: list[int] = []
     offset = 0
@@ -253,16 +260,17 @@ def combine_sessions(
     all_candidates = np.concatenate(shifted_candidates)
     selected = _bounded_indices(indices=all_candidates, maximum=maximum_windows)
     session_windows: list[SessionWindowSummary] = []
-    for session, candidates, session_offset in zip(
-        sessions, local_candidates, offsets, strict=True
+    for session, candidates, raw_candidates, session_offset in zip(
+        sessions, local_candidates, raw_local_candidates, offsets, strict=True
     ):
         upper = session_offset + len(session.labels)
         selected_count = int(((selected >= session_offset) & (selected < upper)).sum())
         session_windows.append(
             SessionWindowSummary(
                 trading_date=session.trading_date,
-                candidates=len(candidates),
+                candidates=len(raw_candidates),
                 selected=selected_count,
+                stride_steps=stride_steps,
                 timestamp_from=_datetime_at(
                     timestamps=session.timestamps, index=int(candidates[0])
                 ),

@@ -51,6 +51,23 @@ class TestCombineSessions:
         assert set(actual.target_indices).issubset({2, 3, 4, 5, 10, 11, 12, 13})
         assert sum(item.selected for item in actual.session_windows) == 4
 
+    def test_applies_stride_independently_inside_each_session(self) -> None:
+        earlier = _session(trading_date=datetime.date(2024, 1, 3), value=1.0)
+        later = _session(trading_date=datetime.date(2024, 2, 1), value=2.0)
+
+        actual = training.combine_sessions(
+            sessions=(earlier, later),
+            context_steps=3,
+            horizon_steps=2,
+            maximum_windows=None,
+            stride_steps=3,
+        )
+
+        assert actual.target_indices.tolist() == [2, 5, 10, 13]
+        assert tuple(item.candidates for item in actual.session_windows) == (4, 4)
+        assert tuple(item.selected for item in actual.session_windows) == (2, 2)
+        assert tuple(item.stride_steps for item in actual.session_windows) == (3, 3)
+
 
 class TestFitFeatureScaler:
     def test_uses_only_the_sessions_explicitly_supplied_for_training(self) -> None:

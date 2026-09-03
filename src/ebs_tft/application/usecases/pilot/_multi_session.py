@@ -724,6 +724,7 @@ def _print_epoch(
     marker = " best" if metric.improved else ""
     print(
         f"[{key}] epoch={metric.epoch}/{maximum_epochs} "
+        f"validation={metric.validation_index} step={metric.optimizer_step} "
         f"train_loss={metric.training_loss:.6f} "
         f"validation_log_loss={metric.validation_log_loss:.6f} "
         f"gradient_norm={metric.gradient_norm:.4f}{marker}",

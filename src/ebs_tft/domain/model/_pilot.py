@@ -15,7 +15,7 @@ from torch.utils import data as torch_data
 
 _DIRECTION_CLASSES: int = 3
 _MAXIMUM_DEPTH: int = 10
-MODEL_PROTOCOL_VERSION: int = 2
+MODEL_PROTOCOL_VERSION: int = 3
 
 
 @attrs.frozen
@@ -39,6 +39,8 @@ class EpochMetric:
     validation_log_loss: float
     gradient_norm: float
     improved: bool
+    validation_index: int = 1
+    optimizer_step: int = 0
 
 
 @attrs.frozen
@@ -357,12 +359,15 @@ def fit_classifier(
     early_stopping_minimum_delta: float,
     gradient_clip_norm: float,
     random_seed: int,
+    validation_checks_per_epoch: int = 1,
     class_weights: np.ndarray | None = None,
     resume_state: TrainingState | None = None,
     epoch_observer: Callable[[EpochMetric], None] | None = None,
     checkpoint_observer: Callable[[TrainingState], None] | None = None,
 ) -> TrainingResult:
     """Fit one classifier, restore its best epoch, and return resumable state."""
+    if validation_checks_per_epoch <= 0:
+        raise ValueError("validation_checks_per_epoch must be positive")
     classifier.to(device)
     optimizer = torch.optim.AdamW(
         classifier.parameters(), lr=learning_rate, weight_decay=weight_decay
@@ -389,6 +394,7 @@ def fit_classifier(
         stalled_validations = resume_state.stalled_validations
         start_epoch = resume_state.epoch + 1
         torch.random.set_rng_state(resume_state.torch_random_state.cpu())
+    optimizer_step = history[-1].optimizer_step if history else 0
     latest_state = resume_state
     stop_reason = (
         "early_stopping"
@@ -414,7 +420,14 @@ def fit_classifier(
         training_loss = 0.0
         examples = 0
         maximum_observed_gradient_norm = 0.0
-        for lob_features, auxiliary_features, labels, _ in training_loader:
+        validation_interval = max(
+            1, math.ceil(len(training_loader) / validation_checks_per_epoch)
+        )
+        validation_index = 0
+        stopped_early = False
+        for batch_index, (lob_features, auxiliary_features, labels, _) in enumerate(
+            training_loader, start=1
+        ):
             lob_features = lob_features.to(device)
             auxiliary_features = auxiliary_features.to(device)
             labels = labels.to(device)
@@ -437,56 +450,63 @@ def fit_classifier(
                 maximum_observed_gradient_norm, gradient_norm
             )
             optimizer.step()
+            optimizer_step += 1
             training_loss += float(loss.detach().cpu()) * len(labels)
             examples += len(labels)
-        validation = predict_classifier(
-            classifier=classifier,
-            dataset=validation_data,
-            device=device,
-            batch_size=batch_size,
-        )
-        validation_labels = validation_data.target_labels()
-        clipped = np.clip(validation.probabilities, 1e-12, 1.0)
-        validation_loss = -float(
-            np.log(clipped[np.arange(len(validation_labels)), validation_labels]).mean()
-        )
-        if not math.isfinite(validation_loss):
-            raise TrainingDivergedError("validation log loss is not finite")
-        improved = validation_loss < (
-            best_validation_loss - early_stopping_minimum_delta
-        )
-        if improved:
-            best_validation_loss = validation_loss
-            best_epoch = epoch
-            best_state = _copy_state(state=classifier.state_dict())
-            stalled_validations = 0
-        else:
-            stalled_validations += 1
-        epoch_metric = EpochMetric(
-            epoch=epoch,
-            training_loss=training_loss / max(examples, 1),
-            validation_log_loss=validation_loss,
-            gradient_norm=maximum_observed_gradient_norm,
-            improved=improved,
-        )
-        history.append(epoch_metric)
-        latest_state = TrainingState(
-            epoch=epoch,
-            classifier_state=_copy_state(state=classifier.state_dict()),
-            optimizer_state=cast(Mapping[str, object], optimizer.state_dict()),
-            best_classifier_state=_copy_state(state=best_state),
-            best_epoch=best_epoch,
-            best_validation_log_loss=best_validation_loss,
-            stalled_validations=stalled_validations,
-            history=tuple(history),
-            torch_random_state=torch.random.get_rng_state().clone(),
-        )
-        if epoch_observer is not None:
-            epoch_observer(epoch_metric)
-        if checkpoint_observer is not None:
+            should_validate = (
+                batch_index % validation_interval == 0
+                or batch_index == len(training_loader)
+            )
+            if not should_validate:
+                continue
+            validation_index += 1
+            validation_loss = _validation_log_loss(
+                classifier=classifier,
+                validation_data=validation_data,
+                device=device,
+                batch_size=batch_size,
+            )
+            improved = validation_loss < (
+                best_validation_loss - early_stopping_minimum_delta
+            )
+            if improved:
+                best_validation_loss = validation_loss
+                best_epoch = epoch
+                best_state = _copy_state(state=classifier.state_dict())
+                stalled_validations = 0
+            else:
+                stalled_validations += 1
+            epoch_metric = EpochMetric(
+                epoch=epoch,
+                training_loss=training_loss / max(examples, 1),
+                validation_log_loss=validation_loss,
+                gradient_norm=maximum_observed_gradient_norm,
+                improved=improved,
+                validation_index=validation_index,
+                optimizer_step=optimizer_step,
+            )
+            history.append(epoch_metric)
+            latest_state = TrainingState(
+                epoch=epoch,
+                classifier_state=_copy_state(state=classifier.state_dict()),
+                optimizer_state=cast(Mapping[str, object], optimizer.state_dict()),
+                best_classifier_state=_copy_state(state=best_state),
+                best_epoch=best_epoch,
+                best_validation_log_loss=best_validation_loss,
+                stalled_validations=stalled_validations,
+                history=tuple(history),
+                torch_random_state=torch.random.get_rng_state().clone(),
+            )
+            if epoch_observer is not None:
+                epoch_observer(epoch_metric)
+            if stalled_validations >= early_stopping_patience:
+                stop_reason = "early_stopping"
+                stopped_early = True
+                break
+            classifier.train()
+        if latest_state is not None and checkpoint_observer is not None:
             checkpoint_observer(latest_state)
-        if stalled_validations >= early_stopping_patience:
-            stop_reason = "early_stopping"
+        if stopped_early:
             break
     if latest_state is None or not best_state:
         raise ValueError("maximum_epochs must allow at least one epoch")
@@ -499,6 +519,29 @@ def fit_classifier(
         stop_reason=stop_reason,
         latest_state=latest_state,
     )
+
+
+def _validation_log_loss(
+    *,
+    classifier: nn.Module,
+    validation_data: SequenceDataset,
+    device: torch.device,
+    batch_size: int,
+) -> float:
+    validation = predict_classifier(
+        classifier=classifier,
+        dataset=validation_data,
+        device=device,
+        batch_size=batch_size,
+    )
+    validation_labels = validation_data.target_labels()
+    clipped = np.clip(validation.probabilities, 1e-12, 1.0)
+    validation_loss = -float(
+        np.log(clipped[np.arange(len(validation_labels)), validation_labels]).mean()
+    )
+    if not math.isfinite(validation_loss):
+        raise TrainingDivergedError("validation log loss is not finite")
+    return validation_loss
 
 
 def _copy_state(*, state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:

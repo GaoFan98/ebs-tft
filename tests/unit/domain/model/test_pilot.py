@@ -102,6 +102,29 @@ class _AuxiliaryClassifier(torch.nn.Module):
 
 
 class TestFitClassifier:
+    def test_checks_validation_within_one_epoch_when_configured(self) -> None:
+        training, validation = _learnable_datasets()
+
+        actual = model.fit_classifier(
+            classifier=_AuxiliaryClassifier(),
+            training_data=training,
+            validation_data=validation,
+            device=torch.device("cpu"),
+            maximum_epochs=1,
+            batch_size=6,
+            learning_rate=0.001,
+            weight_decay=0.0,
+            early_stopping_patience=10,
+            early_stopping_minimum_delta=0.0001,
+            gradient_clip_norm=1.0,
+            random_seed=7,
+            validation_checks_per_epoch=3,
+        )
+
+        assert len(actual.history) == 3
+        assert [item.validation_index for item in actual.history] == [1, 2, 3]
+        assert [item.optimizer_step for item in actual.history] == [4, 8, 10]
+
     def test_stops_after_configured_non_improving_validations(self) -> None:
         features = np.zeros((30, 1, 6), dtype=np.float32)
         auxiliary = np.zeros((30, 10), dtype=np.float32)

@@ -133,8 +133,89 @@ both seeds on balanced accuracy, macro F1, MCC, and log loss without immediate
 validation divergence. L10 must improve L1 consistently before any L2-L9 config is
 created.
 
-The workflow stops if Gate 5 fails. That is a valid negative feasibility result, not
-a reason to keep changing configurations indefinitely.
+Gate 5 failed and remains preserved as useful diagnostic evidence. The failure does
+not justify repeatedly changing horizons or architecture against the same validation
+session. The next development stage uses every available session, predeclared
+rolling folds, spaced training windows, and session-level uncertainty.
+
+### Gate 6: audit every available session and freeze identities
+
+The authoritative pre-GPU specification is `notebooks/research_protocol.yaml`.
+It includes all three paper instruments and all currently available 2024 files.
+Run:
+
+```bash
+uv run ebs-tft research-session-audit \
+  --config notebooks/research_protocol.yaml \
+  --replace-output
+```
+
+This command reads every compressed row, validates and reconstructs the native
+100 ms state sequence, hashes each source, records technical eligibility and exact
+coverage, and creates immutable expanding-window split identities. Eligibility is
+based only on parse/reconstruction success, duration, observed states, and source
+depth. It never excludes a session for having an inconvenient target balance.
+Two configured worker processes audit independent sessions without sharing model
+or state data; final tables are sorted deterministically.
+
+Dates declared untouched below have structural fields audited, but their direction
+targets are not calculated. Development-native states are cached as temporary
+Parquet artifacts so later baseline work cannot silently discover a different
+cohort.
+
+Primary outputs under `notebooks/research_protocol_outputs/` are:
+
+- `session_audit.csv`: one row per discovered physical session;
+- `split_manifest.yaml`: source hashes and expanding train/validation identities;
+- `audit_summary.json` and `terminal_summary.txt`: reproducible audit status;
+- `native_cache/`: ignored, derived development states for the next gate.
+
+The audit records a SHA-256 for each cached development state. The baseline gate
+rechecks both raw-source and cache hashes before reading any metrics.
+
+### Gate 7: verify model contracts and run defensive baselines
+
+First verify what the model names mean in this repository:
+
+```bash
+uv run ebs-tft research-model-protocol \
+  --config notebooks/research_protocol.yaml \
+  --replace-output
+```
+
+The report explicitly describes both models as EBS classification adaptations,
+not exact replications of the original DeepLOB or TFT papers. It verifies their
+required layer families, depth-one/depth-ten shapes, finite outputs, native input
+contract, and multiple validation checks per epoch.
+
+Then run the CPU baseline gate:
+
+```bash
+uv run ebs-tft research-baseline-gate \
+  --config notebooks/research_protocol.yaml \
+  --replace-output
+```
+
+Training windows are pre-spaced by horizon/context while evaluation stays on the
+native grid. This limits highly duplicated training examples without aggregating
+the input. Scaling is fitted on each fold's training sessions only. Results are
+stored per validation session, and uncertainty uses a paired session-block
+bootstrap instead of pretending overlapping 100 ms predictions are independent.
+
+`baseline_gate/gate_decision.json` is the finite decision boundary. A horizon may
+advance to one remote neural benchmark only when logistic L1 has a strictly
+positive 95% lower confidence bound over the empirical-prior baseline for both
+predeclared primary metrics (macro F1 and MCC). Deeper depth is reported separately;
+it is supported only under the same rule for logistic L10 minus L1. A failed gate is
+a valid result and stops remote neural spending rather than triggering ad-hoc config
+tuning.
+
+### Boundary before Runpod
+
+Do not create or rent a Runpod server until Gates 6 and 7 complete, the model report
+passes, and the baseline decision permits a neural benchmark. Server creation,
+credential setup, data transfer, GPU image selection, and remote neural execution
+are the next phase and are intentionally outside this local pre-Runpod stage.
 
 ## Untouched evaluation declaration
 
