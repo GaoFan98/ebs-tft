@@ -1,0 +1,33 @@
+schema_version: 1
+training_sessions:
+  - raw_path: ../data/raw/2024/20240103-EBS_LVL2_EUR_USD_0.csv.gz
+    trading_date: "2024-01-03"
+    grid_steps: 20000
+  - raw_path: ../data/raw/2024/20240201-EBS_LVL2_EUR_USD_0.csv.gz
+    trading_date: "2024-02-01"
+    grid_steps: 20000
+validation_session:
+  raw_path: ../data/raw/2024/20240301-EBS_LVL2_EUR_USD_0.csv.gz
+  trading_date: "2024-03-01"
+  grid_steps: 20000
+instrument: EUR_USD
+output_dir: multi_session_smoke_outputs
+state_interval_milliseconds: 100
+forecast_horizons_milliseconds: [5000]
+modeled_horizons_milliseconds: [5000]
+context_milliseconds: 10000
+maximum_staleness_milliseconds: 60000
+depths: [1]
+models: [deeplob_direction]
+maximum_training_windows: 2048
+maximum_validation_windows: 1024
+maximum_epochs: 2
+early_stopping_patience: 1
+early_stopping_minimum_delta: 0.0001
+gradient_clip_norm: 1.0
+batch_size: 64
+learning_rate: 0.0003
+weight_decay: 0.0001
+hidden_size: 32
+random_seeds: [7]
+device: cpu

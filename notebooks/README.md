@@ -1,19 +1,17 @@
-# Native-resolution local training
+# Native-resolution forecasting development
 
-This folder contains the local, pre-RunPod workflow. It reconstructs causal EBS
-states on the observed 100 ms grid without one-minute aggregation, creates exact
-elapsed-time down/flat/up targets, and evaluates DeepLOB/TFT direction adapters and
-defensive baselines.
+This folder contains one finite development workflow for the DeepLOB and TFT
+direction adapters. EBS quotes and transactions are reconstructed as causal states
+on the verified 100 ms source grid. The 5, 10, 30, and 60-second values are four
+future target offsets over that same state table; they do not aggregate the input.
 
-These are engineering and feasibility experiments. They are not publication evidence:
-the configs use bounded 2024 samples, and the final protocol still needs all approved
-dates, instruments, folds, seeds, dependence-aware uncertainty, statistical testing,
-and the untouched 2023 sample when it becomes available.
+The January 3, February 1, and March 1 results already inspected are development
+evidence only. They must not be relabelled as untouched evaluation evidence.
 
-## Environment verification
+## Environment
 
-Run every command from the repository root. Do not create or activate a virtual
-environment manually; `uv` owns the project environment.
+Run commands from the repository root. Use only `uv`; do not create or activate a
+virtual environment manually.
 
 ```bash
 uv python install 3.13.15
@@ -25,28 +23,48 @@ uv run mypy src tests
 uv run pytest
 ```
 
-The Python command must print `Python 3.13.15`. A locked sync refuses an accidental
-dependency drift. The remaining commands verify formatting, lint, strict types, and
-the unit/integration/functional behavior before expensive training.
+Python must report `3.13.15`. The lockfile prevents dependency drift.
 
-## Run sequence
+## Frozen development protocol
 
-Run one stage at a time. `--replace-output` deliberately replaces only the configured
-directory whose name ends in `_outputs`; omit it to resume a compatible interrupted
-epoch-boundary checkpoint. A completed run is protected from accidental overwrite.
+The reusable settings are deliberately explicit in the YAML files:
 
-### 1. Controlled model sanity check
+- native 100 ms states and a causal 10-second context;
+- separate 5/10/30/60-second three-class direction targets;
+- cumulative depth endpoints L1 and L1-L10 first;
+- DeepLOB and TFT adapters with fixed capacity across depth;
+- training-only normalization and explicit chronological/session boundaries;
+- unweighted cross-entropy, AdamW, learning rate `0.0003`, weight decay `0.0001`;
+- at most 30 epochs, patience 5, best-validation checkpoint restoration;
+- seeds 7 and 19;
+- balanced accuracy, macro F1, MCC, log loss, multiclass Brier score,
+  calibration error, class precision/recall, and confusion matrices;
+- empirical-prior, majority, last-move, and logistic baselines.
+
+Changing one of these settings creates a new development protocol. Do not tune it
+after looking at the held-out dates.
+
+## Finite run sequence
+
+### Gate 1: controlled depth capabilities
 
 ```bash
 uv run ebs-tft local-model-sanity --replace-output
 ```
 
-This cheap CPU check gives both adapters a deterministic balanced causal signal. It
-must show that both models learn it and that reloaded checkpoint predictions agree.
-It tests implementation wiring, not EBS predictability. Results are saved in
-`notebooks/model_sanity_outputs/model_sanity.json`.
+Both adapters must pass all four cases saved in
+`notebooks/model_sanity_outputs/model_sanity.json`:
 
-### 2. Short real-EBS smoke check
+1. learn an L1 signal from L1;
+2. retain that signal when irrelevant L2-L10 values are present;
+3. fail to learn a signal located only at L10 when given L1;
+4. learn that deeper-only signal when given L1-L10.
+
+The check also requires normalized probabilities, successful checkpoint reload, and
+an unchanged parameter count across observed depths. It validates implementation
+capability, not market predictability.
+
+### Gate 2: short integration smoke test
 
 ```bash
 uv run ebs-tft local-pilot \
@@ -54,105 +72,104 @@ uv run ebs-tft local-pilot \
   --replace-output
 ```
 
-This checks parsing, 100 ms reconstruction, a five-second target, chronological
-splits, training-only scaling, baselines, both neural adapters, early stopping,
-best-checkpoint reload, and artifact generation on a small L1 sample. Its purpose is
-operational validation. Dominant flat predictions on this short interval are not
-evidence for or against the research hypothesis.
+This inexpensive run checks parsing, reconstruction, chronological splitting,
+training, checkpointing, and artifact output. Do not interpret its model metrics as
+research evidence.
 
-### 3. Longer January learning run
+### Gate 3: frozen L1/L10 development run
 
 ```bash
 uv run ebs-tft local-pilot \
-  --config notebooks/pilot.yaml \
+  --config notebooks/development_endpoints.yaml \
   --replace-output
 ```
 
-This uses 100 minutes, 5/10/30-second modeled horizons, L1 versus cumulative L1-L10,
-two seeds, unweighted training, and predeclared class-weighted sensitivities. Early
-stopping may finish before the 20-epoch maximum. Inspect target balance and compare
-the neural results with empirical-prior, majority, last-move, and logistic baselines.
+Run this only after Gates 1 and 2 pass. It evaluates all four target offsets over the
+same five hours of January 3 data. A target is viable only when the neural adapters
+beat defensive baselines on balanced metrics and probability quality across both
+seeds without validation divergence. One favorable cell is insufficient.
 
-### 4. Three-date repeat
+Gate 3 completed but failed. Its durable diagnosis is in
+`development_endpoints_outputs/diagnostic_report.md`: the single-session split had
+strong intraday regime shift and far fewer non-overlapping intervals than raw window
+counts suggested.
 
-Only proceed when stage 3 is operationally sound and at least one target has useful
-non-flat support.
+### Gate 4: day-aware multi-session smoke test
 
 ```bash
-uv run ebs-tft local-pilot-matrix \
-  --config notebooks/pilot_matrix.yaml \
+uv run ebs-tft local-multi-session \
+  --config notebooks/multi_session_smoke.yaml \
   --replace-output
 ```
 
-This repeats the same bounded protocol for January, February, and March, then writes
-combined and aggregate tables. If all date runs completed but only aggregation was
-interrupted, rebuild without retraining:
+This bounded integration run verifies that January and February form the training
+corpus, March is the later development-validation session, no context or target
+crosses a session boundary, and scaling is fitted on training sessions only. Its
+metrics are not research evidence.
+
+### Gate 5: full multi-session L1/L10 development
 
 ```bash
-uv run ebs-tft local-pilot-matrix \
-  --config notebooks/pilot_matrix.yaml \
-  --reuse-existing
-```
-
-### 5. Every cumulative depth
-
-Only proceed when the L1/L10 comparison is meaningful enough to justify the larger
-run.
-
-```bash
-uv run ebs-tft local-pilot \
-  --config notebooks/pilot_depths.yaml \
+uv run ebs-tft local-multi-session \
+  --config notebooks/multi_session_development.yaml \
   --replace-output
 ```
 
-This config runs L1, L1-L2, ..., L1-L10 without code changes. The generated
-`depth_comparison.csv` pairs every depth with the preceding configured depth, so this
-config yields the intended `k` minus `k-1` diagnostics. Positive deltas are desirable
-for balanced accuracy, macro F1, and MCC; negative deltas are desirable for log loss.
-Consistency across horizons, seeds, dates, models, and uncertainty matters more than
-one positive value.
+This preserves the models and training rules from Gate 3 but directly addresses its
+diagnosed coverage problem:
 
-The learning, matrix, and all-depth stages can be computationally expensive on a Mac.
-Their exact runtime depends on the selected device and where early stopping occurs.
-Do not launch them concurrently because that changes resource contention and weakens
-runtime comparisons.
+- complete five-hour January 3 and February 1 sessions train each model;
+- the complete five-hour March 1 session supplies early stopping and development
+  validation;
+- each session is reconstructed and targeted independently before concatenation;
+- only L1 and cumulative L1-L10 are compared;
+- per-session feature drift, target balance, and overlapping-window information
+  scale are saved alongside predictions and metrics.
 
-## Watching and resuming training
+March metrics are development-validation results because March selects the best
+epoch. They are suitable for the feasibility gate, not an unbiased final estimate.
+The gate passes only if an endpoint consistently beats defensive baselines across
+both seeds on balanced accuracy, macro F1, MCC, and log loss without immediate
+validation divergence. L10 must improve L1 consistently before any L2-L9 config is
+created.
 
-Each neural cell prints its epoch, training loss, validation log loss, gradient norm,
-and whether validation improved. The best validation epoch—not the final epoch—is
-used for test predictions. If a process stops mid-run, rerun the same command without
-`--replace-output`; compatible `.last.pt` checkpoints resume at an epoch boundary.
-Changed data/config/model identity is rejected by the checkpoint fingerprint.
+The workflow stops if Gate 5 fails. That is a valid negative feasibility result, not
+a reason to keep changing configurations indefinitely.
 
-## Outputs
+## Untouched evaluation declaration
 
-Every pilot output directory contains:
+No architecture, preprocessing, horizon, seed, or training-rule decision may use
+these 2024 EUR/USD dates before the protocol is accepted:
 
-- `terminal_summary.txt`: durable copy of the concise terminal report;
-- `run_summary.json`: resolved protocol, environment, source hash, histories, and
-  model metadata;
-- `native_states.parquet`: causal native-grid states and targets;
-- `target_balance.csv`: down/flat/up counts at every requested horizon;
-- `preprocessing_h*_l*.json`: feature order, training-only scaler values, candidate
-  and selected window counts, rates, and timestamp ranges;
-- `metrics.csv`: baselines and neural classification/probability metrics;
-- `predictions.parquet`: timestamp-aligned held-out probabilities;
-- `depth_comparison.csv`: paired successive configured-depth metrics;
-- `*.last.pt` and `*.best.pt`: resumable and selected atomic checkpoints.
+`2024-01-10`, `2024-01-17`, `2024-01-24`, `2024-01-31`, `2024-02-07`,
+`2024-02-14`, `2024-02-21`, `2024-02-28`, `2024-03-06`, `2024-03-13`,
+`2024-03-20`, and `2024-03-27`.
 
-The matrix folder additionally contains `matrix_metrics.csv`,
-`matrix_target_balance.csv`, `aggregate_metrics.csv`, `depth_comparison.csv`,
-`matrix_summary.json`, and `terminal_summary.txt`.
+After the development gates, create evaluation configs mechanically for the accepted
+model/horizon/depth combinations and run those dates once. EUR/JPY and USD/JPY then
+test cross-instrument generalization under the same frozen protocol. The requested
+2023 data remains the final temporal generalization sample when supplied. Monthly
+subsamples and publication-level dependence-aware confidence intervals come only
+after this first two-year test.
 
-## Notebook interface
+## Outputs and resumption
+
+Multi-session output contains `terminal_summary.txt`, `run_summary.json`, one native
+state artifact per session, per-session and selected-window target balances,
+training-only scaler audits, `session_feature_summary.csv`,
+`dependence_summary.csv`, development-validation metrics/predictions, depth
+comparisons, and best/latest checkpoints. Output directories are temporary and
+ignored by Git.
+
+Omit `--replace-output` to resume a compatible interrupted run at an epoch boundary.
+The checkpoint fingerprint includes every source hash, the complete config,
+dependency version, and model-protocol version. Incompatible checkpoints are
+rejected.
+
+For a notebook interface, run:
 
 ```bash
 uv run --extra pilot jupyter lab notebooks/local_pilot.ipynb
 ```
 
-The notebook defaults to the smoke config and calls the same application use case;
-it contains no duplicate reconstruction or training logic. Terminal commands are
-recommended when you want uninterrupted logs. Send back `terminal_summary.txt`,
-`target_balance.csv`, `metrics.csv`, and, for multi-depth runs,
-`depth_comparison.csv` for interpretation.
+The notebook calls the same application use case and defaults to the smoke config.

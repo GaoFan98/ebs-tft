@@ -25,9 +25,7 @@ __pycache__/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
-notebooks/pilot_outputs/
-notebooks/pilot_*_outputs/
-notebooks/model_sanity_outputs/
+notebooks/*_outputs/
 
 # macOS
 .DS_Store

@@ -5,7 +5,7 @@ state_interval_milliseconds: 100
 
 # Forecast and label choices remain pre-model research decisions. Source timestamps
 # are UTC; files are partitioned by the EBS trading date that rolls at 17:00 New York.
-forecast_horizons_milliseconds: [5000, 10000, 30000]
+forecast_horizons_milliseconds: [5000, 10000, 30000, 60000]
 source_timezone: UTC
 session_calendar: EBS_FX_17_NEW_YORK
 maximum_quote_staleness_milliseconds: 60000

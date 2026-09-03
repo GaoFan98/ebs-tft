@@ -14,6 +14,8 @@ from torch import nn
 from torch.utils import data as torch_data
 
 _DIRECTION_CLASSES: int = 3
+_MAXIMUM_DEPTH: int = 10
+MODEL_PROTOCOL_VERSION: int = 2
 
 
 @attrs.frozen
@@ -104,11 +106,51 @@ class SequenceDataset(torch_data.Dataset[tuple[torch.Tensor, ...]]):
         return self._labels[self._target_indices].numpy()
 
 
+class _DepthEncoder(nn.Module):
+    """Encode ordered levels with a protected L1 route and shared deeper pooling."""
+
+    def __init__(self, *, hidden_size: int) -> None:
+        super().__init__()
+        self._level_encoder = nn.Sequential(
+            nn.Linear(7, hidden_size),
+            nn.GELU(),
+            nn.LayerNorm(hidden_size),
+        )
+        self._deeper_selection = nn.Linear(hidden_size, 1)
+
+    def forward(self, lob_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        depth = lob_features.shape[2]
+        if not 1 <= depth <= _MAXIMUM_DEPTH:
+            raise ValueError(f"LOB depth must be within 1..{_MAXIMUM_DEPTH}")
+        positions = torch.arange(
+            depth,
+            dtype=lob_features.dtype,
+            device=lob_features.device,
+        ) / (_MAXIMUM_DEPTH - 1)
+        position_feature = positions.view(1, 1, depth, 1).expand(
+            *lob_features.shape[:3], 1
+        )
+        encoded = self._level_encoder(
+            torch.cat((lob_features, position_feature), dim=3)
+        )
+        top_of_book = encoded[:, :, 0]
+        if depth == 1:
+            deeper_book = torch.zeros_like(top_of_book)
+        else:
+            deeper_candidates = encoded[:, :, 1:]
+            deeper_weights = torch.softmax(
+                self._deeper_selection(deeper_candidates), dim=2
+            )
+            deeper_book = (deeper_candidates * deeper_weights).sum(dim=2)
+        return top_of_book, deeper_book
+
+
 class DeepLobDirectionClassifier(nn.Module):
-    """Adapt DeepLOB's spatial-CNN/Inception/LSTM design to EBS classification.
+    """Adapt DeepLOB's Inception/LSTM design to ordered EBS depth classification.
 
     Transaction and state-quality inputs use a separate temporal branch instead
-    of being repeated artificially across order-book levels.
+    of being repeated artificially across order-book levels. L1 has a dedicated
+    route, while a shared attention pool adds L2-L10 without changing capacity.
     """
 
     def __init__(self, *, auxiliary_size: int, hidden_size: int) -> None:
@@ -116,18 +158,12 @@ class DeepLobDirectionClassifier(nn.Module):
         if hidden_size % 4:
             raise ValueError("hidden_size must be divisible by four")
         branch_size = hidden_size // 4
-        self._level_encoder = nn.Sequential(
-            nn.Linear(6, hidden_size),
+        self._depth_encoder = _DepthEncoder(hidden_size=hidden_size)
+        self._book_fusion = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
             nn.GELU(),
-        )
-        self._spatial_encoder = nn.Sequential(
-            nn.Conv2d(
-                hidden_size,
-                hidden_size,
-                kernel_size=(1, 3),
-                padding=(0, 1),
-            ),
-            nn.GELU(),
+            nn.LayerNorm(hidden_size),
+            nn.Dropout(0.1),
         )
         self._inception_one = nn.Conv1d(hidden_size, branch_size, kernel_size=1)
         self._inception_three = nn.Conv1d(
@@ -146,6 +182,7 @@ class DeepLobDirectionClassifier(nn.Module):
         self._auxiliary_encoder = nn.Sequential(
             nn.Linear(auxiliary_size, hidden_size // 2),
             nn.GELU(),
+            nn.Dropout(0.1),
         )
         self._temporal = nn.LSTM(
             input_size=hidden_size + hidden_size // 2,
@@ -158,9 +195,10 @@ class DeepLobDirectionClassifier(nn.Module):
         self, lob_features: torch.Tensor, auxiliary_features: torch.Tensor
     ) -> torch.Tensor:
         """Return down/flat/up logits for a batch of context windows."""
-        encoded_levels = self._level_encoder(lob_features)
-        spatial = self._spatial_encoder(encoded_levels.permute(0, 3, 1, 2))
-        temporal_book = spatial.mean(dim=3)
+        top_of_book, deeper_book = self._depth_encoder(lob_features)
+        temporal_book = self._book_fusion(
+            torch.cat((top_of_book, deeper_book), dim=2)
+        ).permute(0, 2, 1)
         branches = (
             self._inception_one(temporal_book),
             self._inception_three(temporal_book),
@@ -181,31 +219,37 @@ class _GatedResidualNetwork(nn.Module):
         super().__init__()
         self._dense = nn.Linear(hidden_size, hidden_size)
         self._gate = nn.Linear(hidden_size, hidden_size * 2)
+        self._dropout = nn.Dropout(0.1)
         self._normalization = nn.LayerNorm(hidden_size)
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
         transformed = torch.nn.functional.elu(self._dense(values))
-        gated = torch.nn.functional.glu(self._gate(transformed), dim=-1)
+        gated = self._dropout(torch.nn.functional.glu(self._gate(transformed), dim=-1))
         return cast(torch.Tensor, self._normalization(values + gated))
 
 
 class TftDirectionClassifier(nn.Module):
-    """Adapt TFT's selection, recurrence, gating, and attention to one-step classes."""
+    """Adapt TFT selection, recurrence, gating, and attention to depth classes.
+
+    Shared ordered-depth encoding yields fixed capacity for L1 through L10. The
+    protected L1 token and optional deeper token enter selection separately.
+    """
 
     def __init__(
-        self, *, input_size: int, hidden_size: int, attention_heads: int = 4
+        self, *, auxiliary_size: int, hidden_size: int, attention_heads: int = 4
     ) -> None:
         super().__init__()
         if hidden_size % attention_heads:
             raise ValueError("hidden_size must be divisible by attention_heads")
-        self._variable_encoders = nn.ModuleList(
+        self._depth_encoder = _DepthEncoder(hidden_size=hidden_size)
+        self._auxiliary_encoders = nn.ModuleList(
             [
                 nn.Sequential(
                     nn.Linear(1, hidden_size),
                     nn.GELU(),
                     _GatedResidualNetwork(hidden_size=hidden_size),
                 )
-                for _ in range(input_size)
+                for _ in range(auxiliary_size)
             ]
         )
         self._selection = nn.Linear(hidden_size, 1)
@@ -228,17 +272,29 @@ class TftDirectionClassifier(nn.Module):
         self, lob_features: torch.Tensor, auxiliary_features: torch.Tensor
     ) -> torch.Tensor:
         """Return down/flat/up logits for a batch of context windows."""
-        batch_size, context_steps = lob_features.shape[:2]
-        flattened_book = lob_features.reshape(batch_size, context_steps, -1)
-        features = torch.cat((flattened_book, auxiliary_features), dim=2)
-        embedded = torch.stack(
+        _, context_steps, depth = lob_features.shape[:3]
+        top_of_book, deeper_book = self._depth_encoder(lob_features)
+        encoded_auxiliary = torch.stack(
             [
-                encoder(features[:, :, index : index + 1])
-                for index, encoder in enumerate(self._variable_encoders)
+                encoder(auxiliary_features[:, :, index : index + 1])
+                for index, encoder in enumerate(self._auxiliary_encoders)
             ],
             dim=2,
         )
-        selection_weights = torch.softmax(self._selection(embedded).squeeze(-1), dim=2)
+        embedded = torch.cat(
+            (
+                top_of_book.unsqueeze(2),
+                deeper_book.unsqueeze(2),
+                encoded_auxiliary,
+            ),
+            dim=2,
+        )
+        selection_logits = self._selection(embedded).squeeze(-1)
+        if depth == 1:
+            deeper_mask = torch.zeros_like(selection_logits, dtype=torch.bool)
+            deeper_mask[:, :, 1] = True
+            selection_logits = selection_logits.masked_fill(deeper_mask, float("-inf"))
+        selection_weights = torch.softmax(selection_logits, dim=2)
         selected = (embedded * selection_weights.unsqueeze(-1)).sum(dim=2)
         recurrent, _ = self._recurrent(selected)
         recurrent = self._recurrent_gate(recurrent)
@@ -296,6 +352,7 @@ def fit_classifier(
     maximum_epochs: int,
     batch_size: int,
     learning_rate: float,
+    weight_decay: float,
     early_stopping_patience: int,
     early_stopping_minimum_delta: float,
     gradient_clip_norm: float,
@@ -307,7 +364,9 @@ def fit_classifier(
 ) -> TrainingResult:
     """Fit one classifier, restore its best epoch, and return resumable state."""
     classifier.to(device)
-    optimizer = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(
+        classifier.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
     weight_tensor = (
         torch.from_numpy(class_weights).float().to(device)
         if class_weights is not None

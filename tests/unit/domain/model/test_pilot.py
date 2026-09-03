@@ -30,11 +30,21 @@ class TestDeepLobDirectionClassifier:
 
         assert actual.shape == (4, 3)
 
+    def test_one_classifier_accepts_depth_one_and_ten_at_fixed_capacity(self) -> None:
+        classifier = model.DeepLobDirectionClassifier(auxiliary_size=10, hidden_size=16)
+        auxiliary_features = torch.zeros((2, 8, 10))
+        parameter_count = model.parameter_count(classifier=classifier)
+
+        classifier(torch.zeros((2, 8, 1, 6)), auxiliary_features)
+        classifier(torch.zeros((2, 8, 10, 6)), auxiliary_features)
+
+        assert model.parameter_count(classifier=classifier) == parameter_count
+
 
 class TestTftDirectionClassifier:
     def test_returns_three_logits_for_each_window(self) -> None:
         classifier = model.TftDirectionClassifier(
-            input_size=70, hidden_size=16, attention_heads=4
+            auxiliary_size=10, hidden_size=16, attention_heads=4
         )
         lob_features = torch.zeros((4, 32, 10, 6))
         auxiliary_features = torch.zeros((4, 32, 10))
@@ -45,7 +55,7 @@ class TestTftDirectionClassifier:
 
     def test_supports_level_one_without_inactive_level_features(self) -> None:
         classifier = model.TftDirectionClassifier(
-            input_size=16, hidden_size=16, attention_heads=4
+            auxiliary_size=10, hidden_size=16, attention_heads=4
         )
         lob_features = torch.zeros((4, 32, 1, 6))
         auxiliary_features = torch.zeros((4, 32, 10))
@@ -53,6 +63,18 @@ class TestTftDirectionClassifier:
         actual = classifier(lob_features, auxiliary_features)
 
         assert actual.shape == (4, 3)
+
+    def test_one_classifier_accepts_depth_one_and_ten_at_fixed_capacity(self) -> None:
+        classifier = model.TftDirectionClassifier(
+            auxiliary_size=10, hidden_size=16, attention_heads=4
+        )
+        auxiliary_features = torch.zeros((2, 8, 10))
+        parameter_count = model.parameter_count(classifier=classifier)
+
+        classifier(torch.zeros((2, 8, 1, 6)), auxiliary_features)
+        classifier(torch.zeros((2, 8, 10, 6)), auxiliary_features)
+
+        assert model.parameter_count(classifier=classifier) == parameter_count
 
 
 class _BiasClassifier(torch.nn.Module):
@@ -108,6 +130,7 @@ class TestFitClassifier:
             maximum_epochs=10,
             batch_size=6,
             learning_rate=0.0,
+            weight_decay=0.0,
             early_stopping_patience=2,
             early_stopping_minimum_delta=0.0001,
             gradient_clip_norm=1.0,
@@ -209,6 +232,7 @@ class TestFitClassifier:
             maximum_epochs=10,
             batch_size=6,
             learning_rate=0.0,
+            weight_decay=0.0,
             early_stopping_patience=2,
             early_stopping_minimum_delta=0.0001,
             gradient_clip_norm=1.0,
@@ -224,6 +248,7 @@ class TestFitClassifier:
             maximum_epochs=10,
             batch_size=6,
             learning_rate=0.0,
+            weight_decay=0.0,
             early_stopping_patience=2,
             early_stopping_minimum_delta=0.0001,
             gradient_clip_norm=1.0,
@@ -305,6 +330,7 @@ def _fit(
         maximum_epochs=maximum_epochs,
         batch_size=15,
         learning_rate=0.01,
+        weight_decay=0.0,
         early_stopping_patience=10,
         early_stopping_minimum_delta=0.0,
         gradient_clip_norm=1.0,

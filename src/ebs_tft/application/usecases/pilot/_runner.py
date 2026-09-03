@@ -97,6 +97,7 @@ def run(
 
     device = model_domain.select_device(requested=specification.device)
     metric_rows: list[dict[str, object]] = []
+    split_balance_rows: list[dict[str, object]] = []
     prediction_frames: list[pl.DataFrame] = []
     histories: dict[str, object] = {}
     model_metadata: dict[str, object] = {}
@@ -107,6 +108,13 @@ def run(
                 specification=specification,
                 depth=depth,
                 horizon_steps=horizon_steps,
+            )
+            split_balance_rows.extend(
+                _split_target_balance_rows(
+                    prepared=prepared,
+                    depth=depth,
+                    horizon_steps=horizon_steps,
+                )
             )
             _write_preprocessing(
                 prepared=prepared,
@@ -176,6 +184,10 @@ def run(
     )
     metrics_path = specification.output_dir / "metrics.csv"
     metrics_data.write_csv(metrics_path)
+    split_balance_path = specification.output_dir / "split_target_balance.csv"
+    pl.DataFrame(split_balance_rows).sort(
+        ["horizon_steps", "depth", "split"]
+    ).write_csv(split_balance_path)
     depth_comparison_path = specification.output_dir / "depth_comparison.csv"
     _comparison.cumulative_depth_comparison(metrics=metrics_data).write_csv(
         depth_comparison_path
@@ -206,6 +218,7 @@ def run(
             "deal_rows_consumed": parse_audit.deal_rows,
             "sha256": source_sha256,
         },
+        "model_protocol_version": model_domain.MODEL_PROTOCOL_VERSION,
         "protocol": _jsonable(attrs.asdict(specification)),
         "environment": {
             "python": platform.python_version(),
@@ -217,6 +230,7 @@ def run(
         "artifacts": {
             "native_states": str(native_states_path),
             "target_balance": str(specification.output_dir / "target_balance.csv"),
+            "split_target_balance": str(split_balance_path),
             "metrics": str(metrics_path),
             "depth_comparison": str(depth_comparison_path),
             "predictions": str(predictions_path),
@@ -246,6 +260,36 @@ def run(
         summary_path=summary_path,
         terminal_summary_path=terminal_summary_path,
     )
+
+
+def _split_target_balance_rows(
+    *, prepared: _PreparedData, depth: int, horizon_steps: int
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    split_indices = {
+        "training": prepared.training_indices,
+        "validation": prepared.validation_indices,
+        "test": prepared.test_indices,
+    }
+    for split, indices in split_indices.items():
+        counts = np.bincount(prepared.labels[indices], minlength=3)
+        total = int(counts.sum())
+        rows.append(
+            {
+                "depth": depth,
+                "horizon_steps": horizon_steps,
+                "horizon_milliseconds": (
+                    horizon_steps * pilot_models.GRID_INTERVAL_MILLISECONDS
+                ),
+                "split": split,
+                "down": int(counts[0]),
+                "flat": int(counts[1]),
+                "up": int(counts[2]),
+                "total": total,
+                "flat_percentage": 100.0 * float(counts[1]) / total,
+            }
+        )
+    return rows
 
 
 def _prepare_data(
@@ -549,10 +593,7 @@ def _classifier(
         )
     if model_name is pilot_models.ModelName.TFT:
         return model_domain.TftDirectionClassifier(
-            input_size=(
-                prepared.lob_features.shape[1] * prepared.lob_features.shape[2]
-                + prepared.auxiliary_features.shape[1]
-            ),
+            auxiliary_size=prepared.auxiliary_features.shape[1],
             hidden_size=hidden_size,
         )
     raise ValueError(f"unsupported pilot model: {model_name}")
@@ -607,6 +648,7 @@ def _fit_neural_cell(
         maximum_epochs=specification.maximum_epochs,
         batch_size=specification.batch_size,
         learning_rate=specification.learning_rate,
+        weight_decay=specification.weight_decay,
         early_stopping_patience=specification.early_stopping_patience,
         early_stopping_minimum_delta=(specification.early_stopping_minimum_delta),
         gradient_clip_norm=specification.gradient_clip_norm,
@@ -894,14 +936,14 @@ def _normalized_probabilities(*, probabilities: np.ndarray) -> np.ndarray:
 def _model_description(*, model_name: pilot_models.ModelName) -> str:
     if model_name is pilot_models.ModelName.DEEP_LOB:
         return (
-            "EBS DeepLOB direction adapter with shared level encoding, spatial "
-            "convolution, temporal Inception branches, an auxiliary transaction "
-            "branch, an LSTM, and a three-class head."
+            "EBS DeepLOB direction adapter with a protected L1 route, shared "
+            "ordered deeper-level pooling, temporal Inception branches, an "
+            "auxiliary transaction branch, an LSTM, and a three-class head."
         )
     return (
-        "EBS TFT direction adapter with per-variable encoders, variable selection, "
-        "LSTM recurrence, gated residual networks, causal attention, and a "
-        "three-class head."
+        "EBS TFT direction adapter with fixed-capacity protected-L1/deeper tokens, "
+        "auxiliary-variable selection, LSTM recurrence, gated residual networks, "
+        "causal attention, and a three-class head."
     )
 
 
@@ -929,6 +971,7 @@ def _experiment_fingerprint(
     source_sha256: str,
 ) -> str:
     payload = {
+        "model_protocol_version": model_domain.MODEL_PROTOCOL_VERSION,
         "protocol": _jsonable(attrs.asdict(specification)),
         "model": model_name.value,
         "training_mode": training_mode,

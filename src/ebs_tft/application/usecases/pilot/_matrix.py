@@ -144,6 +144,7 @@ def _existing_result(*, output_dir: Path) -> _runner.PilotResult:
         result.summary_path,
         result.terminal_summary_path,
         output_dir / "target_balance.csv",
+        output_dir / "split_target_balance.csv",
     )
     missing_paths = [str(item) for item in required_paths if not item.is_file()]
     if missing_paths:

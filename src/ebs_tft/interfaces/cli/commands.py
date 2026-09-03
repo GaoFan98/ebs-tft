@@ -19,7 +19,7 @@ def root() -> None:
 @app.command("local-pilot")
 def local_pilot(
     config: Path = typer.Option(
-        Path("notebooks/pilot.yaml"),
+        Path("notebooks/pilot_smoke.yaml"),
         "--config",
         help="Path to the exact-schema local pilot YAML.",
     ),
@@ -56,7 +56,7 @@ def local_model_sanity(
 @app.command("local-pilot-matrix")
 def local_pilot_matrix(
     config: Path = typer.Option(
-        Path("notebooks/pilot_matrix.yaml"),
+        ...,
         "--config",
         help="Path to the bounded multi-date pilot-matrix YAML.",
     ),
@@ -77,6 +77,24 @@ def local_pilot_matrix(
         reuse_existing=reuse_existing,
         replace_output=replace_output,
     )
+
+
+@app.command("local-multi-session")
+def local_multi_session(
+    config: Path = typer.Option(
+        Path("notebooks/multi_session_development.yaml"),
+        "--config",
+        help="Path to the day-aware multi-session development YAML.",
+    ),
+    replace_output: bool = typer.Option(
+        False,
+        "--replace-output",
+        help="Delete the configured *_outputs directory before training.",
+    ),
+) -> None:
+    """Run day-aware training and later-session development validation."""
+    specification = pilot.load_multi_session_specification(path=config)
+    pilot.run_multi_session(specification=specification, replace_output=replace_output)
 
 
 def main() -> None:
