@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import attrs
 import numpy as np
 import polars as pl
 from sklearn import linear_model, metrics
@@ -11,6 +12,67 @@ from sklearn import linear_model, metrics
 from ebs_tft.domain.orderbook import models as orderbook_models
 from ebs_tft.domain.pilot import models as pilot_models
 from ebs_tft.domain.pilot import training as pilot_training
+
+
+@attrs.frozen
+class DefensiveBaselineModel:
+    """Hold fitted defensive baselines without evaluation-sized arrays."""
+
+    majority_class: int
+    class_probabilities: np.ndarray
+    logistic: linear_model.LogisticRegression
+
+
+def fit_defensive_baseline_model(
+    *, sessions: tuple[pilot_training.PreparedBaselineSession, ...]
+) -> DefensiveBaselineModel:
+    """Fit defensive baselines from compact training-session rows."""
+    if not sessions:
+        raise ValueError("at least one baseline training session is required")
+    training_labels = np.concatenate([item.labels for item in sessions])
+    training_features = np.concatenate([item.features for item in sessions])
+    majority_class = int(np.bincount(training_labels, minlength=3).argmax())
+    class_probabilities = np.bincount(training_labels, minlength=3).astype(np.float64)
+    class_probabilities /= class_probabilities.sum()
+    logistic = linear_model.LogisticRegression(
+        max_iter=1_000,
+        random_state=0,
+        class_weight="balanced",
+    )
+    logistic.fit(training_features, training_labels)
+    return DefensiveBaselineModel(
+        majority_class=majority_class,
+        class_probabilities=class_probabilities,
+        logistic=logistic,
+    )
+
+
+def predict_defensive_baselines(
+    *,
+    fitted: DefensiveBaselineModel,
+    evaluation: pilot_training.PreparedBaselineSession,
+) -> dict[str, np.ndarray]:
+    """Return four defensive baseline probability matrices for one session."""
+    observation_count = len(evaluation.labels)
+    majority = np.zeros((observation_count, 3), dtype=np.float64)
+    majority[:, fitted.majority_class] = 1.0
+    empirical_prior = np.tile(fitted.class_probabilities, (observation_count, 1))
+    raw_probabilities = fitted.logistic.predict_proba(evaluation.features)
+    logistic_probabilities = np.zeros((observation_count, 3), dtype=np.float64)
+    for source_index, class_label in enumerate(fitted.logistic.classes_):
+        logistic_probabilities[:, int(class_label)] = raw_probabilities[:, source_index]
+    last_move_classes = (
+        np.sign(evaluation.mid_prices - evaluation.previous_mid_prices).astype(np.int64)
+        + 1
+    )
+    persistence = np.zeros((observation_count, 3), dtype=np.float64)
+    persistence[np.arange(observation_count), last_move_classes] = 1.0
+    return {
+        "empirical_prior": empirical_prior,
+        "last_move": persistence,
+        "majority": majority,
+        "logistic": logistic_probabilities,
+    }
 
 
 def fit_defensive_baselines(
@@ -91,7 +153,13 @@ def direction_metric_row(
         "training_mode": "unweighted" if seed >= 0 else "baseline",
         "observations": len(labels),
         "accuracy": metrics.accuracy_score(labels, predictions),
-        "balanced_accuracy": metrics.balanced_accuracy_score(labels, predictions),
+        "balanced_accuracy": metrics.recall_score(
+            labels,
+            predictions,
+            labels=[0, 1, 2],
+            average="macro",
+            zero_division=0,
+        ),
         "macro_f1": metrics.f1_score(
             labels, predictions, labels=[0, 1, 2], average="macro", zero_division=0
         ),

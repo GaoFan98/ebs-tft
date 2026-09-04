@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import cast
 
 import attrs
@@ -85,6 +85,17 @@ class PreparedCorpus:
     session_windows: tuple[SessionWindowSummary, ...]
 
 
+@attrs.frozen
+class PreparedBaselineSession:
+    """Hold compact current-state rows for defensive baseline evaluation."""
+
+    trading_date: datetime.date
+    features: np.ndarray
+    labels: np.ndarray
+    mid_prices: np.ndarray
+    previous_mid_prices: np.ndarray
+
+
 def extract_session(
     *, data: pl.DataFrame, trading_date: datetime.date, depth: int, horizon_steps: int
 ) -> RawSessionData:
@@ -162,29 +173,34 @@ def extract_session(
     )
 
 
-def fit_feature_scaler(*, sessions: Sequence[RawSessionData]) -> FeatureScaler:
+def fit_feature_scaler(*, sessions: Iterable[RawSessionData]) -> FeatureScaler:
     """Return feature moments fitted exclusively on the supplied sessions."""
-    if not sessions:
-        raise ValueError("at least one training session is required")
     lob_count = 0
     lob_sum = np.zeros(len(LOB_FEATURE_ORDER), dtype=np.float64)
     lob_square_sum = np.zeros(len(LOB_FEATURE_ORDER), dtype=np.float64)
     auxiliary_count = 0
     auxiliary_sum = np.zeros(len(AUXILIARY_FEATURE_ORDER), dtype=np.float64)
     auxiliary_square_sum = np.zeros(len(AUXILIARY_FEATURE_ORDER), dtype=np.float64)
+    session_count = 0
     for session in sessions:
-        active_lob = session.lob_features[session.observed].reshape(
-            -1, len(LOB_FEATURE_ORDER)
-        )
-        active_auxiliary = session.auxiliary_features[session.observed]
-        lob_count += len(active_lob)
-        lob_sum += active_lob.sum(axis=0, dtype=np.float64)
-        lob_square_sum += np.square(active_lob, dtype=np.float64).sum(axis=0)
-        auxiliary_count += len(active_auxiliary)
-        auxiliary_sum += active_auxiliary.sum(axis=0, dtype=np.float64)
-        auxiliary_square_sum += np.square(active_auxiliary, dtype=np.float64).sum(
-            axis=0
-        )
+        session_count += 1
+        for start in range(0, len(session.observed), 100_000):
+            stop = start + 100_000
+            observed = session.observed[start:stop]
+            active_lob = session.lob_features[start:stop][observed].reshape(
+                -1, len(LOB_FEATURE_ORDER)
+            )
+            active_auxiliary = session.auxiliary_features[start:stop][observed]
+            lob_count += len(active_lob)
+            lob_sum += active_lob.sum(axis=0, dtype=np.float64)
+            lob_square_sum += np.square(active_lob, dtype=np.float64).sum(axis=0)
+            auxiliary_count += len(active_auxiliary)
+            auxiliary_sum += active_auxiliary.sum(axis=0, dtype=np.float64)
+            auxiliary_square_sum += np.square(active_auxiliary, dtype=np.float64).sum(
+                axis=0
+            )
+    if session_count == 0:
+        raise ValueError("at least one training session is required")
     if lob_count == 0 or auxiliary_count == 0:
         raise ValueError("training sessions contain no observed book states")
     lob_means = lob_sum / lob_count
@@ -207,6 +223,42 @@ def fit_feature_scaler(*, sessions: Sequence[RawSessionData]) -> FeatureScaler:
         auxiliary_standard_deviations=auxiliary_deviations.reshape(1, -1).astype(
             np.float32
         ),
+    )
+
+
+def prepare_baseline_session(
+    *,
+    session: RawSessionData,
+    scaler: FeatureScaler,
+    context_steps: int,
+    horizon_steps: int,
+    stride_steps: int = 1,
+) -> PreparedBaselineSession:
+    """Return scaled current-state rows selected at boundary-safe targets."""
+    if isinstance(stride_steps, bool) or stride_steps <= 0:
+        raise ValueError("stride_steps must be a positive integer")
+    indices = _candidate_indices(
+        session=session,
+        context_steps=context_steps,
+        horizon_steps=horizon_steps,
+    )[::stride_steps]
+    lob_features = (
+        (session.lob_features[indices] - scaler.lob_means)
+        / scaler.lob_standard_deviations
+    ).astype(np.float32)
+    auxiliary_features = (
+        (session.auxiliary_features[indices] - scaler.auxiliary_means)
+        / scaler.auxiliary_standard_deviations
+    ).astype(np.float32)
+    features = np.column_stack(
+        (lob_features.reshape(len(indices), -1), auxiliary_features)
+    ).astype(np.float32, copy=False)
+    return PreparedBaselineSession(
+        trading_date=session.trading_date,
+        features=features,
+        labels=session.labels[indices],
+        mid_prices=session.mid_prices[indices],
+        previous_mid_prices=session.mid_prices[indices - 1],
     )
 
 

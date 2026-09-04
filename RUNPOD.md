@@ -130,6 +130,12 @@ uv run ebs-tft research-baseline-gate \
   --replace-output
 ```
 
+The baseline gate keeps memory bounded to one full native session at a time and
+writes an atomic checkpoint after each fold. If the process is interrupted after a
+checkpoint is saved, rerun the command **without** `--replace-output` to reuse every
+compatible completed fold. Use `--replace-output` only when intentionally starting
+the baseline gate from scratch.
+
 Do not run either command on the Mac. Do not start neural training unless
 `baseline_gate/gate_decision.json` permits the finite neural benchmark.
 

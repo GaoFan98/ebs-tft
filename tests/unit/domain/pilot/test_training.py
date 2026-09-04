@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 
+import attrs
 import numpy as np
 
 from ebs_tft.domain import model
@@ -85,6 +86,38 @@ class TestFitFeatureScaler:
         assert np.all(scaler.auxiliary_means == 1.0)
         assert np.all(transformed_validation.lob_features == 99.0)
         assert np.all(transformed_validation.auxiliary_features == 99.0)
+
+    def test_accepts_a_single_pass_session_iterator(self) -> None:
+        session = _session(trading_date=datetime.date(2024, 1, 3), value=2.0)
+
+        actual = training.fit_feature_scaler(sessions=iter((session,)))
+
+        assert np.all(actual.lob_means == 2.0)
+        assert np.all(actual.auxiliary_means == 2.0)
+
+
+class TestPrepareBaselineSession:
+    def test_keeps_only_strided_current_state_rows(self) -> None:
+        session = _session(trading_date=datetime.date(2024, 1, 3), value=2.0)
+        session = attrs.evolve(
+            session,
+            labels=np.arange(8, dtype=np.int64) % 3,
+            mid_prices=np.arange(8, dtype=np.float64),
+        )
+        scaler = training.fit_feature_scaler(sessions=(session,))
+
+        actual = training.prepare_baseline_session(
+            session=session,
+            scaler=scaler,
+            context_steps=3,
+            horizon_steps=2,
+            stride_steps=2,
+        )
+
+        assert actual.features.shape == (2, 16)
+        assert actual.labels.tolist() == [2, 1]
+        assert actual.mid_prices.tolist() == [2.0, 4.0]
+        assert actual.previous_mid_prices.tolist() == [1.0, 3.0]
 
 
 def _session(*, trading_date: datetime.date, value: float) -> training.RawSessionData:

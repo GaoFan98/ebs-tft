@@ -64,6 +64,21 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
     assert comparisons["sessions"].min() == 3
     assert baseline.gate_path.is_file()
 
+    (baseline.output_dir / "run_summary.json").unlink()
+    resumed = research_protocol.run_baseline_gate(
+        protocol=protocol, protocol_path=protocol_path, replace_output=False
+    )
+    assert "resumed_folds=3" in resumed.terminal_summary_path.read_text(
+        encoding="utf-8"
+    )
+
+    replaced = research_protocol.run_baseline_gate(
+        protocol=protocol, protocol_path=protocol_path, replace_output=True
+    )
+    assert "resumed_folds=0" in replaced.terminal_summary_path.read_text(
+        encoding="utf-8"
+    )
+
 
 def _protocol(
     *, data_dir: Path, output_dir: Path, locked_date: datetime.date

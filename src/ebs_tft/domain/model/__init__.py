@@ -1,11 +1,14 @@
 """Expose forecasting-model domain adapters."""
 
 from ebs_tft.domain.model._evaluation import (
+    DefensiveBaselineModel,
     direction_metric_row,
     direction_prediction_frame,
     expected_calibration_error,
+    fit_defensive_baseline_model,
     fit_defensive_baselines,
     normalized_probabilities,
+    predict_defensive_baselines,
 )
 from ebs_tft.domain.model._pilot import (
     MODEL_PROTOCOL_VERSION,
@@ -26,6 +29,7 @@ from ebs_tft.domain.model._pilot import (
 
 __all__ = [
     "DeepLobDirectionClassifier",
+    "DefensiveBaselineModel",
     "EpochMetric",
     "MODEL_PROTOCOL_VERSION",
     "PredictionBatch",
@@ -38,10 +42,12 @@ __all__ = [
     "direction_prediction_frame",
     "expected_calibration_error",
     "fit_defensive_baselines",
+    "fit_defensive_baseline_model",
     "fit_classifier",
     "parameter_count",
     "normalized_probabilities",
     "predict_classifier",
+    "predict_defensive_baselines",
     "select_device",
     "set_random_seed",
 ]
