@@ -210,6 +210,23 @@ it is supported only under the same rule for logistic L10 minus L1. A failed gat
 a valid result and stops remote neural spending rather than triggering ad-hoc config
 tuning.
 
+The admitted remote benchmark is configured separately so its optimization settings
+remain frozen before neural outcomes are observed:
+
+```bash
+uv run ebs-tft research-neural-benchmark \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml \
+  --replace-output
+```
+
+The runner mechanically selects baseline-supported horizons and depths, uses the
+existing rolling development folds, and stores one resumable artifact directory per
+model, seed, fold, horizon, and depth. Rerun without `--replace-output` after an
+interruption. Neural models advance beyond development only when their across-seed
+mean has a positive paired-session confidence lower bound over the defensive
+logistic baseline at the same admitted depth for both predeclared primary metrics.
+
 ### Boundary before Runpod
 
 Do not create or rent a Runpod server until Gates 6 and 7 complete, the model report

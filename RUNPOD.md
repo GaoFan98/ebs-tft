@@ -139,6 +139,46 @@ the baseline gate from scratch.
 Do not run either command on the Mac. Do not start neural training unless
 `baseline_gate/gate_decision.json` permits the finite neural benchmark.
 
+## Gated neural benchmark
+
+After the baseline gate admits neural work, run the frozen benchmark policy. The
+runner reads the audited rolling folds, selects only baseline-admitted horizons,
+and includes deeper depth only for horizons whose depth gate passed. It refuses CPU
+fallback under the committed Runpod policy and never loads locked sessions.
+
+For a new benchmark run inside tmux:
+
+```bash
+cd /workspace/ebs-tft
+set -o pipefail
+time uv run --no-sync ebs-tft research-neural-benchmark \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml \
+  --maximum-new-cells 1 \
+  --replace-output 2>&1 | tee notebooks/neural_benchmark_terminal.log
+```
+
+The first command intentionally completes one cell and exits successfully so its
+runtime and cost can be reviewed before committing to the remaining cells. To
+continue all remaining cells, rerun without both `--maximum-new-cells` and
+`--replace-output`.
+
+Each model/fold/horizon/seed cell writes an epoch checkpoint and publishes its
+metrics, predictions, and completion summary atomically. After an interruption,
+rerun **without** `--replace-output`:
+
+```bash
+cd /workspace/ebs-tft
+set -o pipefail
+time uv run --no-sync ebs-tft research-neural-benchmark \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml \
+  2>&1 | tee -a notebooks/neural_benchmark_terminal.log
+```
+
+Stopping a Pod can lose only the unfinished portion of the current epoch. Completed
+cells and the latest completed epoch remain reusable on the volume disk.
+
 ## Platform references
 
 - [Runpod: connect with VS Code Remote SSH](https://docs.runpod.io/pods/configuration/connect-to-ide)

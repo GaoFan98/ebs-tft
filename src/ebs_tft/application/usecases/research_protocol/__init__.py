@@ -16,6 +16,17 @@ from ebs_tft.application.usecases.research_protocol._config import (
     UnableToLoadResearchProtocolError,
     load_protocol,
 )
+from ebs_tft.application.usecases.research_protocol._neural import (
+    NeuralBenchmarkPausedError,
+    NeuralBenchmarkResult,
+)
+from ebs_tft.application.usecases.research_protocol._neural import (
+    run as run_neural_benchmark,
+)
+from ebs_tft.application.usecases.research_protocol._neural_config import (
+    UnableToLoadNeuralBenchmarkPolicyError,
+    load_policy,
+)
 from ebs_tft.application.usecases.research_protocol._verification import (
     ModelProtocolVerificationResult,
 )
@@ -28,8 +39,13 @@ __all__ = [
     "BaselineGateResult",
     "UnableToLoadResearchProtocolError",
     "ModelProtocolVerificationResult",
+    "NeuralBenchmarkResult",
+    "NeuralBenchmarkPausedError",
+    "UnableToLoadNeuralBenchmarkPolicyError",
     "load_protocol",
+    "load_policy",
     "run_session_audit",
     "run_baseline_gate",
     "run_model_protocol_verification",
+    "run_neural_benchmark",
 ]

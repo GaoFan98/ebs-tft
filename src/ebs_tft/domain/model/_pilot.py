@@ -319,6 +319,21 @@ class TftDirectionClassifier(nn.Module):
         return cast(torch.Tensor, self._classifier(attended[:, -1]))
 
 
+def build_direction_classifier(
+    *, model_name: str, auxiliary_size: int, hidden_size: int
+) -> nn.Module:
+    """Return one approved EBS direction classifier by protocol name."""
+    if model_name == "deeplob_direction":
+        return DeepLobDirectionClassifier(
+            auxiliary_size=auxiliary_size, hidden_size=hidden_size
+        )
+    if model_name == "tft_direction":
+        return TftDirectionClassifier(
+            auxiliary_size=auxiliary_size, hidden_size=hidden_size
+        )
+    raise ValueError(f"unsupported model adapter: {model_name}")
+
+
 def select_device(*, requested: str) -> torch.device:
     """Resolve one explicit compute device without silently changing a request."""
     if requested == "auto":

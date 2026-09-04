@@ -26,6 +26,7 @@ __pycache__/
 # Jupyter checkpoints
 .ipynb_checkpoints/
 notebooks/*_outputs/
+notebooks/*_terminal.log
 
 # macOS
 .DS_Store

@@ -204,3 +204,39 @@ class RollingFold:
             raise ValueError("validation sessions must be chronological")
         if training_dates[-1] >= validation_dates[0]:
             raise ValueError("validation sessions must strictly follow training")
+
+
+@attrs.frozen
+class NeuralBenchmarkPolicy:
+    """Freeze optimization settings for the finite gated neural benchmark."""
+
+    maximum_epochs: int
+    early_stopping_patience: int
+    early_stopping_minimum_delta: float
+    gradient_clip_norm: float
+    batch_size: int
+    learning_rate: float
+    weight_decay: float
+    hidden_size: int
+    device: str
+
+    def __attrs_post_init__(self) -> None:
+        """Reject settings that cannot define one deterministic benchmark."""
+        positive_integers = (
+            self.maximum_epochs,
+            self.early_stopping_patience,
+            self.batch_size,
+            self.hidden_size,
+        )
+        if any(isinstance(value, bool) or value <= 0 for value in positive_integers):
+            raise ValueError(
+                "epoch, patience, batch, and hidden sizes must be positive"
+            )
+        if self.early_stopping_minimum_delta < 0:
+            raise ValueError("early_stopping_minimum_delta must be non-negative")
+        if self.gradient_clip_norm <= 0 or self.learning_rate <= 0:
+            raise ValueError("gradient_clip_norm and learning_rate must be positive")
+        if self.weight_decay < 0:
+            raise ValueError("weight_decay must be non-negative")
+        if self.device not in {"cpu", "mps", "cuda"}:
+            raise ValueError("benchmark device must be cpu, mps, or cuda")

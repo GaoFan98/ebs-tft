@@ -161,6 +161,46 @@ def research_model_protocol(
     )
 
 
+@app.command("research-neural-benchmark")
+def research_neural_benchmark(
+    config: Path = typer.Option(
+        Path("notebooks/research_protocol.yaml"),
+        "--config",
+        help="Path to the audited research-protocol YAML.",
+    ),
+    policy: Path = typer.Option(
+        Path("notebooks/research_neural_benchmark.yaml"),
+        "--policy",
+        help="Path to the frozen neural optimization policy YAML.",
+    ),
+    replace_output: bool = typer.Option(
+        False,
+        "--replace-output",
+        help="Delete prior gated-neural outputs before training.",
+    ),
+    maximum_new_cells: int | None = typer.Option(
+        None,
+        "--maximum-new-cells",
+        min=1,
+        help="Pause safely after this many newly completed cells.",
+    ),
+) -> None:
+    """Run the finite rolling neural benchmark admitted by baseline evidence."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_policy = research_protocol.load_policy(path=policy)
+    try:
+        research_protocol.run_neural_benchmark(
+            protocol=loaded_protocol,
+            protocol_path=config.resolve(),
+            policy=loaded_policy,
+            policy_path=policy.resolve(),
+            replace_output=replace_output,
+            maximum_new_cells=maximum_new_cells,
+        )
+    except research_protocol.NeuralBenchmarkPausedError as exc:
+        typer.echo(str(exc))
+
+
 def main() -> None:
     """Invoke the project CLI."""
     app()

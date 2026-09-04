@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import datetime
 import gzip
+import json
 from pathlib import Path
 
 import polars as pl
+import pytest
 import yaml
 
 from ebs_tft.application.usecases import research_protocol
@@ -76,6 +78,80 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
         protocol=protocol, protocol_path=protocol_path, replace_output=True
     )
     assert "resumed_folds=0" in replaced.terminal_summary_path.read_text(
+        encoding="utf-8"
+    )
+
+    research_protocol.run_model_protocol_verification(
+        protocol=protocol, replace_output=False
+    )
+    research_protocol.run_model_protocol_verification(
+        protocol=protocol, replace_output=True
+    )
+    gate = json.loads(replaced.gate_path.read_text(encoding="utf-8"))
+    gate["baseline_signal_by_horizon"] = {"100": True}
+    gate["depth_support_by_horizon"] = {"100": True}
+    gate["eligible_for_neural_benchmark"] = True
+    replaced.gate_path.write_text(json.dumps(gate, indent=2), encoding="utf-8")
+    policy_path = tmp_path / "neural_policy.yaml"
+    policy_path.write_text("schema_version: 1\n", encoding="utf-8")
+    policy = research_models.NeuralBenchmarkPolicy(
+        maximum_epochs=1,
+        early_stopping_patience=1,
+        early_stopping_minimum_delta=0.0001,
+        gradient_clip_norm=1.0,
+        batch_size=8,
+        learning_rate=0.0003,
+        weight_decay=0.0001,
+        hidden_size=8,
+        device="cpu",
+    )
+
+    with pytest.raises(research_protocol.NeuralBenchmarkPausedError) as pause:
+        research_protocol.run_neural_benchmark(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            policy=policy,
+            policy_path=policy_path,
+            replace_output=False,
+            maximum_new_cells=1,
+        )
+    assert pause.value.completed_cells == 1
+    assert (pause.value.output_dir / "progress_summary.json").is_file()
+
+    neural = research_protocol.run_neural_benchmark(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        policy=policy,
+        policy_path=policy_path,
+        replace_output=False,
+    )
+
+    neural_metrics = pl.read_csv(neural.metrics_path)
+    assert neural_metrics.height == 24
+    assert neural_metrics["validation_date"].n_unique() == 3
+    assert set(neural_metrics["depth"].unique()) == {1, 10}
+    comparisons = pl.read_csv(neural.comparisons_path)
+    assert set(comparisons["depth"].unique()) == {1, 10}
+    assert neural.gate_path.is_file()
+    assert "resumed_cells=1" in neural.terminal_summary_path.read_text(encoding="utf-8")
+    assert not (neural.output_dir / "progress_summary.json").exists()
+    prediction_dates = set(
+        pl.scan_parquet(neural.output_dir / "cells" / "**" / "predictions.parquet")
+        .select("validation_date")
+        .collect()["validation_date"]
+        .unique()
+    )
+    assert dates[-1] not in prediction_dates
+
+    (neural.output_dir / "run_summary.json").unlink()
+    resumed_neural = research_protocol.run_neural_benchmark(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        policy=policy,
+        policy_path=policy_path,
+        replace_output=False,
+    )
+    assert "resumed_cells=24" in resumed_neural.terminal_summary_path.read_text(
         encoding="utf-8"
     )
 

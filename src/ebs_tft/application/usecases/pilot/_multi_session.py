@@ -497,15 +497,11 @@ def _fit_neural_cell(
 def _classifier(
     *, model_name: pilot_models.ModelName, auxiliary_size: int, hidden_size: int
 ) -> torch.nn.Module:
-    if model_name is pilot_models.ModelName.DEEP_LOB:
-        return model_domain.DeepLobDirectionClassifier(
-            auxiliary_size=auxiliary_size, hidden_size=hidden_size
-        )
-    if model_name is pilot_models.ModelName.TFT:
-        return model_domain.TftDirectionClassifier(
-            auxiliary_size=auxiliary_size, hidden_size=hidden_size
-        )
-    raise ValueError(f"unsupported model: {model_name}")
+    return model_domain.build_direction_classifier(
+        model_name=model_name.value,
+        auxiliary_size=auxiliary_size,
+        hidden_size=hidden_size,
+    )
 
 
 def _balance_rows(

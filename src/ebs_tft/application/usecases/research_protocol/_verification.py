@@ -27,10 +27,13 @@ def run(
 ) -> ModelProtocolVerificationResult:
     """Verify adapter shapes, depth capacity, required modules, and disclosure."""
     output_dir = protocol.output_dir / "model_protocol"
-    artifact_repository.prepare_run_directory(path=output_dir, replace=replace_output)
-    checks = (
-        _check_model(model_name="deeplob_direction"),
-        _check_model(model_name="tft_direction"),
+    artifact_repository.prepare_run_directory(
+        path=output_dir,
+        replace=replace_output,
+        replacement_parent=protocol.output_dir,
+    )
+    checks = tuple(
+        _check_model(model_name=model_name) for model_name in protocol.models
     )
     report = {
         "model_protocol_version": model_domain.MODEL_PROTOCOL_VERSION,
@@ -73,13 +76,17 @@ def _check_model(*, model_name: str) -> dict[str, object]:
     classifier: torch.nn.Module
     required_types: tuple[type[torch.nn.Module], ...]
     if model_name == "deeplob_direction":
-        classifier = model_domain.DeepLobDirectionClassifier(
-            auxiliary_size=auxiliary_size, hidden_size=hidden_size
+        classifier = model_domain.build_direction_classifier(
+            model_name=model_name,
+            auxiliary_size=auxiliary_size,
+            hidden_size=hidden_size,
         )
         required_types = (torch.nn.Conv1d, torch.nn.LSTM)
     elif model_name == "tft_direction":
-        classifier = model_domain.TftDirectionClassifier(
-            auxiliary_size=auxiliary_size, hidden_size=hidden_size
+        classifier = model_domain.build_direction_classifier(
+            model_name=model_name,
+            auxiliary_size=auxiliary_size,
+            hidden_size=hidden_size,
         )
         required_types = (torch.nn.LSTM, torch.nn.MultiheadAttention)
     else:
