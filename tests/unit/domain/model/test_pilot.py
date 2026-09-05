@@ -37,6 +37,25 @@ class TestSequenceDataset:
             for actual_item, expected_item in zip(actual, expected, strict=True)
         )
 
+    def test_device_resident_batch_preserves_values(self) -> None:
+        rows = 12
+        dataset = model.SequenceDataset(
+            lob_features=np.arange(rows * 6, dtype=np.float32).reshape(rows, 1, 6),
+            auxiliary_features=np.arange(rows * 4, dtype=np.float32).reshape(rows, 4),
+            labels=(np.arange(rows) % 3).astype(np.int64),
+            target_indices=np.array([3, 6, 9]),
+            context_steps=3,
+        )
+        expected = dataset.batch(indices=torch.tensor([2, 0]))
+
+        actual = dataset.to(torch.device("cpu")).batch(indices=torch.tensor([2, 0]))
+
+        assert all(
+            torch.equal(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected, strict=True)
+        )
+        np.testing.assert_array_equal(dataset.target_labels(), np.array([0, 0, 0]))
+
 
 class TestDeepLobDirectionClassifier:
     def test_returns_three_logits_for_each_window(self) -> None:

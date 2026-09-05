@@ -95,6 +95,19 @@ class SequenceDataset(torch_data.Dataset[tuple[torch.Tensor, ...]]):
         """Return the number of selected target windows."""
         return len(self._target_indices)
 
+    def to(self, device: torch.device) -> SequenceDataset:
+        """Keep the compact corpus on the compute device between window batches."""
+        self._lob_features = self._lob_features.to(device)
+        self._auxiliary_features = self._auxiliary_features.to(device)
+        self._labels = self._labels.to(device)
+        self._target_indices = self._target_indices.to(device)
+        return self
+
+    @property
+    def device(self) -> torch.device:
+        """Return the device holding the compact corpus tensors."""
+        return self._target_indices.device
+
     def __getitem__(self, index: int) -> tuple[torch.Tensor, ...]:
         """Return one context window and its target without copying the corpus."""
         target_index = int(self._target_indices[index])
@@ -110,11 +123,13 @@ class SequenceDataset(torch_data.Dataset[tuple[torch.Tensor, ...]]):
         """Materialize one batch of windows with a single vectorized lookup."""
         if indices.ndim != 1:
             raise ValueError("batch indices must be one-dimensional")
+        indices = indices.to(self._target_indices.device)
         target_indices = self._target_indices[indices]
         context_offsets = torch.arange(
             1 - self._context_steps,
             1,
             dtype=target_indices.dtype,
+            device=target_indices.device,
         )
         window_indices = target_indices[:, None] + context_offsets[None, :]
         return (
@@ -126,7 +141,7 @@ class SequenceDataset(torch_data.Dataset[tuple[torch.Tensor, ...]]):
 
     def target_labels(self) -> np.ndarray:
         """Return labels aligned to this dataset's selected target windows."""
-        return self._labels[self._target_indices].numpy()
+        return self._labels[self._target_indices].cpu().numpy()
 
 
 class _DepthEncoder(nn.Module):
@@ -618,7 +633,7 @@ def predict_classifier(
         for start in range(0, len(dataset), batch_size):
             stop = min(start + batch_size, len(dataset))
             lob_features, auxiliary_features, _, _ = dataset.batch(
-                indices=torch.arange(start, stop)
+                indices=torch.arange(start, stop, device=dataset.device)
             )
             logits = classifier(lob_features.to(device), auxiliary_features.to(device))
             batch_probabilities = torch.softmax(logits, dim=1).cpu().numpy()

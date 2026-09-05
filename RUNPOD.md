@@ -150,10 +150,11 @@ Policy schema 2 preserves the frozen training batch of 64 while using an
 inference-only evaluation batch of 16384. The first optimized calibration at
 1024 spent 44.2 of 54.5 fit minutes in validation and peaked at only 0.42 GiB on
 the 48 GiB RTX A6000, motivating this operational increase. Window construction
-is vectorized and per-step GPU synchronization is avoided; these are execution
-optimizations, not changes to model updates, sample order, early stopping rules,
-or statistical gates. The implementation version is part of the run identity so
-outputs from the earlier unoptimized calibration cannot be mixed into this run.
+is vectorized, the compact corpus stays GPU-resident between batches, and per-step
+GPU synchronization is avoided; these are execution optimizations, not changes to
+model updates, sample order, early stopping rules, or statistical gates. The
+implementation version is part of the run identity so outputs from earlier
+calibrations cannot be mixed into this run.
 
 For a new benchmark run inside tmux:
 

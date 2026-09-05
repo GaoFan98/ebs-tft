@@ -24,7 +24,7 @@ from ebs_tft.domain.pilot import training as pilot_training
 from ebs_tft.domain.research import models as research_models
 from ebs_tft.domain.research import operations as research_operations
 
-NEURAL_BENCHMARK_IMPLEMENTATION_VERSION = 2
+NEURAL_BENCHMARK_IMPLEMENTATION_VERSION = 3
 
 
 @attrs.frozen
@@ -620,6 +620,8 @@ def _fit_cell(
     cell.output_dir.mkdir(parents=True, exist_ok=True)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
+    training_dataset.to(device)
+    validation_dataset.to(device)
     model_domain.set_random_seed(seed=cell.seed)
     classifier = model_domain.build_direction_classifier(
         model_name=cell.model_name,
