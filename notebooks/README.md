@@ -36,7 +36,7 @@ The reusable settings are deliberately explicit in the YAML files:
 - training-only normalization and explicit chronological/session boundaries;
 - unweighted cross-entropy, AdamW, learning rate `0.0003`, weight decay `0.0001`;
 - at most 30 epochs, patience 5, best-validation checkpoint restoration;
-- training batch 64 and inference-only evaluation batch 1024;
+- training batch 64 and inference-only evaluation batch 16384;
 - seeds 7 and 19;
 - balanced accuracy, macro F1, MCC, log loss, multiclass Brier score,
   calibration error, class precision/recall, and confusion matrices;
