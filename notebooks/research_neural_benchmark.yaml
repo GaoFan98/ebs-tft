@@ -1,12 +1,17 @@
-schema_version: 1
+schema_version: 2
 
-# Frozen before neural outcomes are observed. These values are copied unchanged
-# from the pre-existing multi_session_development.yaml optimization settings.
+# The training and model-selection values are copied unchanged from the
+# pre-existing multi_session_development.yaml settings and remain frozen.
 maximum_epochs: 30
 early_stopping_patience: 5
 early_stopping_minimum_delta: 0.0001
 gradient_clip_norm: 1.0
 batch_size: 64
+
+# This execution-only value was added after the first runtime calibration; that
+# calibration is discarded. Inference is batch-independent for both adapters, so
+# a larger batch removes launch overhead without changing training updates.
+evaluation_batch_size: 1024
 learning_rate: 0.0003
 weight_decay: 0.0001
 hidden_size: 32

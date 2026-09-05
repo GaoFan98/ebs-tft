@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from collections.abc import Callable, Mapping
 from typing import cast
 
@@ -68,6 +69,8 @@ class TrainingResult:
     epochs_completed: int
     stop_reason: str
     latest_state: TrainingState
+    fit_elapsed_seconds: float
+    validation_elapsed_seconds: float
 
 
 class SequenceDataset(torch_data.Dataset[tuple[torch.Tensor, ...]]):
@@ -101,6 +104,24 @@ class SequenceDataset(torch_data.Dataset[tuple[torch.Tensor, ...]]):
             self._auxiliary_features[start : target_index + 1],
             self._labels[target_index],
             self._target_indices[index],
+        )
+
+    def batch(self, *, indices: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """Materialize one batch of windows with a single vectorized lookup."""
+        if indices.ndim != 1:
+            raise ValueError("batch indices must be one-dimensional")
+        target_indices = self._target_indices[indices]
+        context_offsets = torch.arange(
+            1 - self._context_steps,
+            1,
+            dtype=target_indices.dtype,
+        )
+        window_indices = target_indices[:, None] + context_offsets[None, :]
+        return (
+            self._lob_features[window_indices],
+            self._auxiliary_features[window_indices],
+            self._labels[target_indices],
+            target_indices,
         )
 
     def target_labels(self) -> np.ndarray:
@@ -368,6 +389,7 @@ def fit_classifier(
     device: torch.device,
     maximum_epochs: int,
     batch_size: int,
+    evaluation_batch_size: int | None = None,
     learning_rate: float,
     weight_decay: float,
     early_stopping_patience: int,
@@ -381,8 +403,18 @@ def fit_classifier(
     checkpoint_observer: Callable[[TrainingState], None] | None = None,
 ) -> TrainingResult:
     """Fit one classifier, restore its best epoch, and return resumable state."""
+    if isinstance(batch_size, bool) or batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    resolved_evaluation_batch_size = evaluation_batch_size or batch_size
+    if (
+        isinstance(resolved_evaluation_batch_size, bool)
+        or resolved_evaluation_batch_size <= 0
+    ):
+        raise ValueError("evaluation_batch_size must be positive")
     if validation_checks_per_epoch <= 0:
         raise ValueError("validation_checks_per_epoch must be positive")
+    fit_started = time.perf_counter()
+    validation_elapsed_seconds = 0.0
     classifier.to(device)
     optimizer = torch.optim.AdamW(
         classifier.parameters(), lr=learning_rate, weight_decay=weight_decay
@@ -424,63 +456,66 @@ def fit_classifier(
     )
     for epoch in epoch_range:
         generator = torch.Generator().manual_seed(random_seed + epoch)
-        training_loader = torch_data.DataLoader(
-            training_data,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=0,
-            generator=generator,
-        )
+        # Preserve the exact order produced by the former single-process
+        # DataLoader, which consumed one base-worker seed before RandomSampler.
+        torch.empty((), dtype=torch.int64).random_(generator=generator)
+        shuffled_indices = torch.randperm(len(training_data), generator=generator)
+        training_batches = math.ceil(len(training_data) / batch_size)
         classifier.train()
-        training_loss = 0.0
+        training_loss = torch.zeros((), dtype=torch.float64, device=device)
+        losses_finite = torch.ones((), dtype=torch.bool, device=device)
+        gradients_finite = torch.ones((), dtype=torch.bool, device=device)
         examples = 0
-        maximum_observed_gradient_norm = 0.0
+        maximum_observed_gradient_norm = torch.zeros((), device=device)
         validation_interval = max(
-            1, math.ceil(len(training_loader) / validation_checks_per_epoch)
+            1, math.ceil(training_batches / validation_checks_per_epoch)
         )
         validation_index = 0
         stopped_early = False
-        for batch_index, (lob_features, auxiliary_features, labels, _) in enumerate(
-            training_loader, start=1
+        for batch_index, start in enumerate(
+            range(0, len(training_data), batch_size), start=1
         ):
+            lob_features, auxiliary_features, labels, _ = training_data.batch(
+                indices=shuffled_indices[start : start + batch_size]
+            )
             lob_features = lob_features.to(device)
             auxiliary_features = auxiliary_features.to(device)
             labels = labels.to(device)
             optimizer.zero_grad(set_to_none=True)
             logits = classifier(lob_features, auxiliary_features)
             loss = loss_function(logits, labels)
-            if not torch.isfinite(loss):
-                raise TrainingDivergedError("training loss is not finite")
+            losses_finite.logical_and_(torch.isfinite(loss.detach()))
             loss.backward()
-            gradient_norm = float(
-                torch.nn.utils.clip_grad_norm_(
-                    classifier.parameters(), max_norm=gradient_clip_norm
-                )
-                .detach()
-                .cpu()
-            )
-            if not math.isfinite(gradient_norm):
-                raise TrainingDivergedError("gradient norm is not finite")
-            maximum_observed_gradient_norm = max(
-                maximum_observed_gradient_norm, gradient_norm
+            gradient_norm_tensor = torch.nn.utils.clip_grad_norm_(
+                classifier.parameters(), max_norm=gradient_clip_norm
+            ).detach()
+            gradients_finite.logical_and_(torch.isfinite(gradient_norm_tensor))
+            maximum_observed_gradient_norm = torch.maximum(
+                maximum_observed_gradient_norm, gradient_norm_tensor
             )
             optimizer.step()
             optimizer_step += 1
-            training_loss += float(loss.detach().cpu()) * len(labels)
+            training_loss += loss.detach().to(torch.float64) * len(labels)
             examples += len(labels)
             should_validate = (
                 batch_index % validation_interval == 0
-                or batch_index == len(training_loader)
+                or batch_index == training_batches
             )
             if not should_validate:
                 continue
+            if not bool(losses_finite.item()):
+                raise TrainingDivergedError("training loss is not finite")
+            if not bool(gradients_finite.item()):
+                raise TrainingDivergedError("gradient norm is not finite")
             validation_index += 1
+            validation_started = time.perf_counter()
             validation_loss = _validation_log_loss(
                 classifier=classifier,
                 validation_data=validation_data,
                 device=device,
-                batch_size=batch_size,
+                batch_size=resolved_evaluation_batch_size,
             )
+            validation_elapsed_seconds += time.perf_counter() - validation_started
             improved = validation_loss < (
                 best_validation_loss - early_stopping_minimum_delta
             )
@@ -493,9 +528,9 @@ def fit_classifier(
                 stalled_validations += 1
             epoch_metric = EpochMetric(
                 epoch=epoch,
-                training_loss=training_loss / max(examples, 1),
+                training_loss=float(training_loss.item()) / max(examples, 1),
                 validation_log_loss=validation_loss,
-                gradient_norm=maximum_observed_gradient_norm,
+                gradient_norm=float(maximum_observed_gradient_norm.item()),
                 improved=improved,
                 validation_index=validation_index,
                 optimizer_step=optimizer_step,
@@ -533,6 +568,8 @@ def fit_classifier(
         epochs_completed=latest_state.epoch,
         stop_reason=stop_reason,
         latest_state=latest_state,
+        fit_elapsed_seconds=time.perf_counter() - fit_started,
+        validation_elapsed_seconds=validation_elapsed_seconds,
     )
 
 
@@ -573,16 +610,16 @@ def predict_classifier(
     """Return probabilities and labels in deterministic dataset order."""
     classifier.to(device)
     classifier.eval()
-    loader = torch_data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-    )
+    if isinstance(batch_size, bool) or batch_size <= 0:
+        raise ValueError("batch_size must be positive")
     labels: list[np.ndarray] = []
     probabilities: list[np.ndarray] = []
-    with torch.no_grad():
-        for lob_features, auxiliary_features, _, _ in loader:
+    with torch.inference_mode():
+        for start in range(0, len(dataset), batch_size):
+            stop = min(start + batch_size, len(dataset))
+            lob_features, auxiliary_features, _, _ = dataset.batch(
+                indices=torch.arange(start, stop)
+            )
             logits = classifier(lob_features.to(device), auxiliary_features.to(device))
             batch_probabilities = torch.softmax(logits, dim=1).cpu().numpy()
             probabilities.append(batch_probabilities)

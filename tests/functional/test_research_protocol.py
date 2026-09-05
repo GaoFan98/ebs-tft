@@ -93,13 +93,14 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
     gate["eligible_for_neural_benchmark"] = True
     replaced.gate_path.write_text(json.dumps(gate, indent=2), encoding="utf-8")
     policy_path = tmp_path / "neural_policy.yaml"
-    policy_path.write_text("schema_version: 1\n", encoding="utf-8")
+    policy_path.write_text("schema_version: 2\n", encoding="utf-8")
     policy = research_models.NeuralBenchmarkPolicy(
         maximum_epochs=1,
         early_stopping_patience=1,
         early_stopping_minimum_delta=0.0001,
         gradient_clip_norm=1.0,
         batch_size=8,
+        evaluation_batch_size=32,
         learning_rate=0.0003,
         weight_decay=0.0001,
         hidden_size=8,
@@ -133,6 +134,17 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
     comparisons = pl.read_csv(neural.comparisons_path)
     assert set(comparisons["depth"].unique()) == {1, 10}
     assert neural.gate_path.is_file()
+    cell_summary = json.loads(
+        next((neural.output_dir / "cells").rglob("cell_summary.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cell_summary["training_batch_size"] == 8
+    assert cell_summary["evaluation_batch_size"] == 32
+    assert cell_summary["training_windows"] > 0
+    assert cell_summary["validation_windows"] > 0
+    assert cell_summary["fit_elapsed_seconds"] >= 0
+    assert cell_summary["validation_elapsed_seconds"] >= 0
     assert "resumed_cells=1" in neural.terminal_summary_path.read_text(encoding="utf-8")
     assert not (neural.output_dir / "progress_summary.json").exists()
     prediction_dates = set(

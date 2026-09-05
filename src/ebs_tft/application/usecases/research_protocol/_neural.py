@@ -24,6 +24,8 @@ from ebs_tft.domain.pilot import training as pilot_training
 from ebs_tft.domain.research import models as research_models
 from ebs_tft.domain.research import operations as research_operations
 
+NEURAL_BENCHMARK_IMPLEMENTATION_VERSION = 2
+
 
 @attrs.frozen
 class NeuralBenchmarkResult:
@@ -83,13 +85,13 @@ def run(
         protocol_path=protocol_path,
         protocol=protocol,
     )
-    _baseline._verify_cached_states(
-        folds=folds, audit_path=audit_path, protocol=protocol
-    )
     admitted_dimensions, gate_hash = _admitted_dimensions(
         protocol=protocol, protocol_path=protocol_path
     )
     device = model_domain.select_device(requested=policy.device)
+    _baseline._verify_cached_states(
+        folds=folds, audit_path=audit_path, protocol=protocol
+    )
     output_dir = protocol.output_dir / "neural_benchmark"
     artifact_repository.prepare_run_directory(
         path=output_dir,
@@ -150,11 +152,22 @@ def run(
                 )
                 if not pending:
                     continue
+                preparation_started = time.perf_counter()
                 training_corpus, validation_corpus = _prepare_corpora(
                     protocol=protocol,
                     fold=fold,
                     depth=depth,
                     horizon_steps=horizon_steps,
+                )
+                preparation_elapsed = time.perf_counter() - preparation_started
+                print(
+                    "[neural-benchmark] corpus="
+                    f"{fold.identifier}:h"
+                    f"{horizon_steps * protocol.state_interval_milliseconds}:d{depth} "
+                    f"training_windows={len(training_corpus.target_indices)} "
+                    f"validation_windows={len(validation_corpus.target_indices)} "
+                    f"preparation_seconds={preparation_elapsed:.2f}",
+                    flush=True,
                 )
                 training_dataset = model_domain.SequenceDataset(
                     lob_features=training_corpus.lob_features,
@@ -399,6 +412,7 @@ def _run_identity(
 ) -> dict[str, object]:
     return {
         "schema_version": 1,
+        "implementation_version": NEURAL_BENCHMARK_IMPLEMENTATION_VERSION,
         "model_protocol_version": model_domain.MODEL_PROTOCOL_VERSION,
         "protocol_sha256": _baseline._sha256_file(path=protocol_path),
         "policy_sha256": _baseline._sha256_file(path=policy_path),
@@ -604,6 +618,8 @@ def _fit_cell(
     validation_corpus: pilot_training.PreparedCorpus,
 ) -> pl.DataFrame:
     cell.output_dir.mkdir(parents=True, exist_ok=True)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     model_domain.set_random_seed(seed=cell.seed)
     classifier = model_domain.build_direction_classifier(
         model_name=cell.model_name,
@@ -622,6 +638,7 @@ def _fit_cell(
         device=device,
         maximum_epochs=policy.maximum_epochs,
         batch_size=policy.batch_size,
+        evaluation_batch_size=policy.evaluation_batch_size,
         learning_rate=policy.learning_rate,
         weight_decay=policy.weight_decay,
         early_stopping_patience=policy.early_stopping_patience,
@@ -656,12 +673,14 @@ def _fit_cell(
         classifier=evaluation_classifier,
         fingerprint=cell.fingerprint,
     )
+    evaluation_started = time.perf_counter()
     prediction = model_domain.predict_classifier(
         classifier=evaluation_classifier,
         dataset=validation_dataset,
         device=device,
-        batch_size=policy.batch_size,
+        batch_size=policy.evaluation_batch_size,
     )
+    evaluation_elapsed_seconds = time.perf_counter() - evaluation_started
     parameter_count = model_domain.parameter_count(classifier=evaluation_classifier)
     metrics, predictions = _session_outputs(
         cell=cell,
@@ -683,6 +702,9 @@ def _fit_cell(
                 "best_validation_log_loss": result.best_validation_log_loss,
                 "epochs_completed": result.epochs_completed,
                 "stop_reason": result.stop_reason,
+                "fit_elapsed_seconds": result.fit_elapsed_seconds,
+                "validation_elapsed_seconds": result.validation_elapsed_seconds,
+                "final_evaluation_elapsed_seconds": evaluation_elapsed_seconds,
                 "validations": [attrs.asdict(item) for item in result.history],
             },
             indent=2,
@@ -705,6 +727,14 @@ def _fit_cell(
                 "model": cell.model_name,
                 "seed": cell.seed,
                 "parameter_count": parameter_count,
+                "training_batch_size": policy.batch_size,
+                "evaluation_batch_size": policy.evaluation_batch_size,
+                "training_windows": len(training_dataset),
+                "validation_windows": len(validation_dataset),
+                "fit_elapsed_seconds": result.fit_elapsed_seconds,
+                "validation_elapsed_seconds": result.validation_elapsed_seconds,
+                "final_evaluation_elapsed_seconds": evaluation_elapsed_seconds,
+                "peak_cuda_memory_gib": _peak_cuda_memory_gib(device=device),
                 "locked_evaluation_used": False,
                 "artifact_sha256": artifact_hashes,
                 "artifacts": {
@@ -922,6 +952,12 @@ def _print_validation(
         f"gradient_norm={metric.gradient_norm:.4f}{marker}",
         flush=True,
     )
+
+
+def _peak_cuda_memory_gib(*, device: torch.device) -> float | None:
+    if device.type != "cuda":
+        return None
+    return torch.cuda.max_memory_allocated(device) / (1024**3)
 
 
 def _json_mapping(*, path: Path) -> dict[str, object]:

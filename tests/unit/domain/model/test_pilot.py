@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest.mock
 from typing import cast
 
@@ -9,6 +10,32 @@ import numpy as np
 import torch
 
 from ebs_tft.domain import model
+
+
+class TestSequenceDataset:
+    def test_vectorized_batch_matches_scalar_collation(self) -> None:
+        rows = 12
+        features = np.arange(rows * 2 * 6, dtype=np.float32).reshape(rows, 2, 6)
+        auxiliary = np.arange(rows * 4, dtype=np.float32).reshape(rows, 4)
+        labels = (np.arange(rows) % 3).astype(np.int64)
+        dataset = model.SequenceDataset(
+            lob_features=features,
+            auxiliary_features=auxiliary,
+            labels=labels,
+            target_indices=np.array([3, 6, 9]),
+            context_steps=3,
+        )
+        indices = torch.tensor([2, 0])
+
+        actual = dataset.batch(indices=indices)
+        expected = torch.utils.data.default_collate(
+            [dataset[int(index)] for index in indices]
+        )
+
+        assert all(
+            torch.equal(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected, strict=True)
+        )
 
 
 class TestDeepLobDirectionClassifier:
@@ -102,6 +129,41 @@ class _AuxiliaryClassifier(torch.nn.Module):
 
 
 class TestFitClassifier:
+    def test_preserves_the_legacy_seeded_data_loader_order(self) -> None:
+        training, validation = _learnable_datasets()
+        generator = torch.Generator().manual_seed(18)
+        legacy_order = torch.cat(
+            [
+                target_indices
+                for _, _, _, target_indices in torch.utils.data.DataLoader(
+                    training,
+                    batch_size=15,
+                    shuffle=True,
+                    num_workers=0,
+                    generator=generator,
+                )
+            ]
+        )
+
+        with unittest.mock.patch.object(
+            training, "batch", wraps=training.batch
+        ) as vectorized_batch:
+            _fit(
+                classifier=_AuxiliaryClassifier(),
+                training=training,
+                validation=validation,
+                maximum_epochs=1,
+            )
+
+        training_batch_count = math.ceil(len(training) / 15)
+        vectorized_order = torch.cat(
+            [
+                call.kwargs["indices"]
+                for call in vectorized_batch.call_args_list[:training_batch_count]
+            ]
+        )
+        assert torch.equal(vectorized_order, legacy_order)
+
     def test_checks_validation_within_one_epoch_when_configured(self) -> None:
         training, validation = _learnable_datasets()
 
@@ -311,6 +373,40 @@ class TestPredictClassifier:
 
         move_to_device.assert_called_once_with(requested_device)
         assert actual.probabilities.shape == (3, 3)
+
+    def test_inference_is_stable_across_evaluation_batch_sizes(self) -> None:
+        generator = np.random.default_rng(7)
+        rows = 24
+        dataset = model.SequenceDataset(
+            lob_features=generator.normal(size=(rows, 1, 6)).astype(np.float32),
+            auxiliary_features=generator.normal(size=(rows, 10)).astype(np.float32),
+            labels=(np.arange(rows) % 3).astype(np.int64),
+            target_indices=np.arange(3, rows),
+            context_steps=4,
+        )
+        torch.manual_seed(11)
+        classifier = model.DeepLobDirectionClassifier(auxiliary_size=10, hidden_size=8)
+
+        one_at_a_time = model.predict_classifier(
+            classifier=classifier,
+            dataset=dataset,
+            device=torch.device("cpu"),
+            batch_size=1,
+        )
+        batched = model.predict_classifier(
+            classifier=classifier,
+            dataset=dataset,
+            device=torch.device("cpu"),
+            batch_size=16,
+        )
+
+        np.testing.assert_array_equal(one_at_a_time.labels, batched.labels)
+        np.testing.assert_allclose(
+            one_at_a_time.probabilities,
+            batched.probabilities,
+            rtol=1e-6,
+            atol=1e-7,
+        )
 
 
 def _learnable_datasets() -> tuple[model.SequenceDataset, model.SequenceDataset]:

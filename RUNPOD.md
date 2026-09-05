@@ -146,6 +146,13 @@ runner reads the audited rolling folds, selects only baseline-admitted horizons,
 and includes deeper depth only for horizons whose depth gate passed. It refuses CPU
 fallback under the committed Runpod policy and never loads locked sessions.
 
+Policy schema 2 preserves the frozen training batch of 64 while using an
+inference-only evaluation batch of 1024. Window construction is vectorized and
+per-step GPU synchronization is avoided; these are execution optimizations, not
+changes to model updates, sample order, early stopping rules, or statistical gates.
+The implementation version is part of the run identity so outputs from the earlier
+unoptimized calibration cannot be mixed into this run.
+
 For a new benchmark run inside tmux:
 
 ```bash
@@ -161,7 +168,8 @@ time uv run --no-sync ebs-tft research-neural-benchmark \
 The first command intentionally completes one cell and exits successfully so its
 runtime and cost can be reviewed before committing to the remaining cells. To
 continue all remaining cells, rerun without both `--maximum-new-cells` and
-`--replace-output`.
+`--replace-output`. Its cell summary and training history report corpus size,
+training/validation time, evaluation batch size, and peak CUDA memory.
 
 Each model/fold/horizon/seed cell writes an epoch checkpoint and publishes its
 metrics, predictions, and completion summary atomically. After an interruption,

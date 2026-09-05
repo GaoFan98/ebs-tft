@@ -36,6 +36,7 @@ The reusable settings are deliberately explicit in the YAML files:
 - training-only normalization and explicit chronological/session boundaries;
 - unweighted cross-entropy, AdamW, learning rate `0.0003`, weight decay `0.0001`;
 - at most 30 epochs, patience 5, best-validation checkpoint restoration;
+- training batch 64 and inference-only evaluation batch 1024;
 - seeds 7 and 19;
 - balanced accuracy, macro F1, MCC, log loss, multiclass Brier score,
   calibration error, class precision/recall, and confusion matrices;
@@ -226,6 +227,8 @@ model, seed, fold, horizon, and depth. Rerun without `--replace-output` after an
 interruption. Neural models advance beyond development only when their across-seed
 mean has a positive paired-session confidence lower bound over the defensive
 logistic baseline at the same admitted depth for both predeclared primary metrics.
+Vectorized window batching preserves the seeded sample order, while the larger
+inference-only batch removes evaluation overhead without changing model updates.
 
 ### Boundary before Runpod
 

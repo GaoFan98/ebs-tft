@@ -34,6 +34,7 @@ def load_policy(*, path: Path) -> research_models.NeuralBenchmarkPolicy:
         "early_stopping_minimum_delta",
         "gradient_clip_norm",
         "batch_size",
+        "evaluation_batch_size",
         "learning_rate",
         "weight_decay",
         "hidden_size",
@@ -45,7 +46,7 @@ def load_policy(*, path: Path) -> research_models.NeuralBenchmarkPolicy:
         raise UnableToLoadNeuralBenchmarkPolicyError(
             f"policy keys differ; missing={missing}, extra={extra}"
         )
-    if _integer(data=data, key="schema_version") != 1:
+    if _integer(data=data, key="schema_version") != 2:
         raise UnableToLoadNeuralBenchmarkPolicyError("unsupported schema_version")
     try:
         return research_models.NeuralBenchmarkPolicy(
@@ -56,6 +57,7 @@ def load_policy(*, path: Path) -> research_models.NeuralBenchmarkPolicy:
             ),
             gradient_clip_norm=_float(data=data, key="gradient_clip_norm"),
             batch_size=_integer(data=data, key="batch_size"),
+            evaluation_batch_size=_integer(data=data, key="evaluation_batch_size"),
             learning_rate=_float(data=data, key="learning_rate"),
             weight_decay=_float(data=data, key="weight_decay"),
             hidden_size=_integer(data=data, key="hidden_size"),

@@ -215,6 +215,7 @@ class NeuralBenchmarkPolicy:
     early_stopping_minimum_delta: float
     gradient_clip_norm: float
     batch_size: int
+    evaluation_batch_size: int
     learning_rate: float
     weight_decay: float
     hidden_size: int
@@ -226,11 +227,13 @@ class NeuralBenchmarkPolicy:
             self.maximum_epochs,
             self.early_stopping_patience,
             self.batch_size,
+            self.evaluation_batch_size,
             self.hidden_size,
         )
         if any(isinstance(value, bool) or value <= 0 for value in positive_integers):
             raise ValueError(
-                "epoch, patience, batch, and hidden sizes must be positive"
+                "epoch, patience, training/evaluation batch, and hidden sizes "
+                "must be positive"
             )
         if self.early_stopping_minimum_delta < 0:
             raise ValueError("early_stopping_minimum_delta must be non-negative")
