@@ -156,6 +156,11 @@ model updates, sample order, early stopping rules, or statistical gates. The
 implementation version is part of the run identity so outputs from earlier
 calibrations cannot be mixed into this run.
 
+TFT training pins scaled-dot-product attention to PyTorch's deterministic math
+backend. Inference may still use the faster CUDA forward kernels because it has no
+backward pass. A CUDA nondeterministic-attention warning means the implementation
+identity is stale and the affected TFT cell must not be accepted as final evidence.
+
 For a new benchmark run inside tmux:
 
 ```bash

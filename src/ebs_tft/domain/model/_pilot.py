@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import random
 import time
@@ -344,13 +345,19 @@ class TftDirectionClassifier(nn.Module):
             ),
             diagonal=1,
         )
-        attended, _ = self._attention(
-            recurrent,
-            recurrent,
-            recurrent,
-            attn_mask=causal_mask,
-            need_weights=False,
+        attention_context = (
+            torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH)
+            if self.training and recurrent.is_cuda
+            else contextlib.nullcontext()
         )
+        with attention_context:
+            attended, _ = self._attention(
+                recurrent,
+                recurrent,
+                recurrent,
+                attn_mask=causal_mask,
+                need_weights=False,
+            )
         attended = self._attention_gate(recurrent + attended)
         return cast(torch.Tensor, self._classifier(attended[:, -1]))
 

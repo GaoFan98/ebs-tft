@@ -24,7 +24,7 @@ from ebs_tft.domain.pilot import training as pilot_training
 from ebs_tft.domain.research import models as research_models
 from ebs_tft.domain.research import operations as research_operations
 
-NEURAL_BENCHMARK_IMPLEMENTATION_VERSION = 3
+NEURAL_BENCHMARK_IMPLEMENTATION_VERSION = 4
 
 
 @attrs.frozen
