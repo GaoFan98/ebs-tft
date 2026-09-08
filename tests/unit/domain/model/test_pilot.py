@@ -366,6 +366,32 @@ class TestFitClassifier:
         observer.assert_not_called()
 
 
+class TestFitClassifierFixedEpochs:
+    def test_resumed_fit_matches_uninterrupted_fit(self) -> None:
+        training, _ = _learnable_datasets()
+        model.set_random_seed(seed=41)
+        uninterrupted_classifier = _AuxiliaryClassifier()
+        uninterrupted = _fit_fixed(
+            classifier=uninterrupted_classifier, training=training, epochs=3
+        )
+        model.set_random_seed(seed=41)
+        partial_classifier = _AuxiliaryClassifier()
+        partial = _fit_fixed(
+            classifier=partial_classifier, training=training, epochs=1
+        )
+        resumed_classifier = _AuxiliaryClassifier()
+        resumed = _fit_fixed(
+            classifier=resumed_classifier,
+            training=training,
+            epochs=3,
+            resume_state=partial.latest_state,
+        )
+
+        assert resumed.history == uninterrupted.history
+        for name, value in resumed_classifier.state_dict().items():
+            assert torch.equal(value, uninterrupted_classifier.state_dict()[name])
+
+
 class TestPredictClassifier:
     def test_moves_a_fresh_checkpoint_model_to_the_requested_device(self) -> None:
         features = np.zeros((3, 1, 6), dtype=np.float32)
@@ -471,6 +497,27 @@ def _fit(
         weight_decay=0.0,
         early_stopping_patience=10,
         early_stopping_minimum_delta=0.0,
+        gradient_clip_norm=1.0,
+        random_seed=17,
+        resume_state=resume_state,
+    )
+
+
+def _fit_fixed(
+    *,
+    classifier: torch.nn.Module,
+    training: model.SequenceDataset,
+    epochs: int,
+    resume_state: model.FixedTrainingState | None = None,
+) -> model.FixedTrainingResult:
+    return model.fit_classifier_fixed_epochs(
+        classifier=classifier,
+        training_data=training,
+        device=torch.device("cpu"),
+        epochs=epochs,
+        batch_size=15,
+        learning_rate=0.01,
+        weight_decay=0.0,
         gradient_clip_norm=1.0,
         random_seed=17,
         resume_state=resume_state,

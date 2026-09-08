@@ -16,6 +16,17 @@ from ebs_tft.application.usecases.research_protocol._config import (
     UnableToLoadResearchProtocolError,
     load_protocol,
 )
+from ebs_tft.application.usecases.research_protocol._locked import (
+    LockedEvaluationPausedError,
+    LockedEvaluationPlanResult,
+    LockedEvaluationResult,
+)
+from ebs_tft.application.usecases.research_protocol._locked import (
+    freeze_plan as freeze_locked_evaluation_plan,
+)
+from ebs_tft.application.usecases.research_protocol._locked import (
+    run as run_locked_evaluation,
+)
 from ebs_tft.application.usecases.research_protocol._neural import (
     NeuralBenchmarkPausedError,
     NeuralBenchmarkResult,
@@ -42,10 +53,15 @@ __all__ = [
     "NeuralBenchmarkResult",
     "NeuralBenchmarkPausedError",
     "UnableToLoadNeuralBenchmarkPolicyError",
+    "LockedEvaluationPausedError",
+    "LockedEvaluationPlanResult",
+    "LockedEvaluationResult",
     "load_protocol",
     "load_policy",
     "run_session_audit",
     "run_baseline_gate",
     "run_model_protocol_verification",
     "run_neural_benchmark",
+    "freeze_locked_evaluation_plan",
+    "run_locked_evaluation",
 ]

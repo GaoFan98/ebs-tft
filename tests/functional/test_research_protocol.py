@@ -21,11 +21,11 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
 ) -> None:
     data_dir = tmp_path / "raw"
     output_dir = tmp_path / "outputs"
-    dates = tuple(datetime.date(2024, 1, day) for day in range(1, 6))
+    dates = tuple(datetime.date(2024, 1, day) for day in range(1, 7))
     for trading_date in dates:
         _write_session(data_dir=data_dir, trading_date=trading_date)
     protocol = _protocol(
-        data_dir=data_dir, output_dir=output_dir, locked_date=dates[-1]
+        data_dir=data_dir, output_dir=output_dir, locked_dates=dates[-2:]
     )
     protocol_path = tmp_path / "protocol.yaml"
     protocol_path.write_text("schema_version: 1\n", encoding="utf-8")
@@ -35,19 +35,20 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
     )
 
     audit_data = pl.read_csv(audit.audit_path)
-    assert audit_data.height == 5
+    assert audit_data.height == 6
     locked = audit_data.filter(pl.col("evaluation_locked"))
-    assert locked.height == 1
-    assert locked["total_h100"].null_count() == 1
+    assert locked.height == 2
+    assert locked["total_h100"].null_count() == 2
     with audit.manifest_path.open(encoding="utf-8") as stream:
         manifest = yaml.safe_load(stream)
     folds = manifest["development_folds"]["EUR_USD"]
     assert len(folds) == 3
     assert folds[0]["training_sessions"][0]["trading_date"] == "2024-01-01"
     assert folds[-1]["validation_sessions"][0]["trading_date"] == "2024-01-04"
-    assert manifest["final_test_sessions"]["EUR_USD"][0]["trading_date"] == (
-        "2024-01-05"
-    )
+    assert [
+        item["trading_date"]
+        for item in manifest["final_test_sessions"]["EUR_USD"]
+    ] == ["2024-01-05", "2024-01-06"]
 
     baseline = research_protocol.run_baseline_gate(
         protocol=protocol, protocol_path=protocol_path, replace_output=False
@@ -153,7 +154,7 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
         .collect()["validation_date"]
         .unique()
     )
-    assert dates[-1] not in prediction_dates
+    assert not set(dates[-2:]) & prediction_dates
 
     (neural.output_dir / "run_summary.json").unlink()
     resumed_neural = research_protocol.run_neural_benchmark(
@@ -167,9 +168,101 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
         encoding="utf-8"
     )
 
+    neural_gate = json.loads(neural.gate_path.read_text(encoding="utf-8"))
+    neural_comparisons = pl.read_csv(neural.comparisons_path).with_columns(
+        pl.when(
+            (pl.col("model") == "deeplob_direction")
+            & (pl.col("depth") == 1)
+            & pl.col("metric").is_in(["macro_f1", "mcc"])
+        )
+        .then(0.01)
+        .otherwise(pl.col("confidence_lower"))
+        .alias("confidence_lower")
+    )
+    neural_comparisons.write_csv(neural.comparisons_path)
+    neural_gate["neural_signal_by_model_horizon"][
+        "deeplob_direction:d1:h100"
+    ] = True
+    neural_gate["accepted_model_depth_horizons"] = [
+        {
+            "model": "deeplob_direction",
+            "depth": 1,
+            "horizon_milliseconds": 100,
+        }
+    ]
+    neural.gate_path.write_text(json.dumps(neural_gate, indent=2), encoding="utf-8")
+    plan = research_protocol.freeze_locked_evaluation_plan(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        policy=policy,
+        policy_path=policy_path,
+    )
+    frozen = json.loads(plan.plan_path.read_text(encoding="utf-8"))
+    assert frozen["locked_outcomes_inspected"] is False
+    assert len(frozen["development_sessions"]) == 4
+    assert len(frozen["final_test_sessions"]) == 2
+    assert len(frozen["cells"]) == 2
+
+    with pytest.raises(ValueError, match="plan-sha256"):
+        research_protocol.run_locked_evaluation(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            policy=policy,
+            policy_path=policy_path,
+            plan_sha256="0" * 64,
+        )
+
+    with pytest.raises(research_protocol.LockedEvaluationPausedError):
+        research_protocol.run_locked_evaluation(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            policy=policy,
+            policy_path=policy_path,
+            plan_sha256=plan.plan_sha256,
+            maximum_new_cells=1,
+        )
+    locked = research_protocol.run_locked_evaluation(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        policy=policy,
+        policy_path=policy_path,
+        plan_sha256=plan.plan_sha256,
+    )
+    locked_metrics = pl.read_csv(locked.metrics_path)
+    assert locked_metrics.height == 6
+    assert set(locked_metrics["model"]) == {"deeplob_direction", "logistic"}
+    assert set(locked_metrics["validation_date"]) == {
+        str(dates[-2]),
+        str(dates[-1]),
+    }
+    decision = json.loads(locked.decision_path.read_text(encoding="utf-8"))
+    assert decision["locked_evaluation_used"] is True
+    assert decision["retuning_permitted"] is False
+    with pytest.raises(ValueError, match="already complete"):
+        research_protocol.run_locked_evaluation(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            policy=policy,
+            policy_path=policy_path,
+            plan_sha256=plan.plan_sha256,
+        )
+    assert decision["locked_evaluation_used"] is True
+    assert decision["retuning_permitted"] is False
+    with pytest.raises(ValueError, match="already complete"):
+        research_protocol.run_locked_evaluation(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            policy=policy,
+            policy_path=policy_path,
+            plan_sha256=plan.plan_sha256,
+        )
+
 
 def _protocol(
-    *, data_dir: Path, output_dir: Path, locked_date: datetime.date
+    *,
+    data_dir: Path,
+    output_dir: Path,
+    locked_dates: tuple[datetime.date, ...],
 ) -> research_models.ResearchProtocol:
     return research_models.ResearchProtocol(
         data_dir=data_dir,
@@ -194,7 +287,7 @@ def _protocol(
             minimum_training_sessions=1,
             validation_sessions_per_fold=1,
             fold_step_sessions=1,
-            locked_evaluation_dates=(locked_date,),
+            locked_evaluation_dates=locked_dates,
         ),
         development_instrument=orderbook_models.Instrument.EUR_USD,
         depths=(1, 10),

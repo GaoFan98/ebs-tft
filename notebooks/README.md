@@ -253,6 +253,14 @@ test cross-instrument generalization under the same frozen protocol. The request
 subsamples and publication-level dependence-aware confidence intervals come only
 after this first two-year test.
 
+The implemented boundary is a two-command handshake. Run
+`research-freeze-locked-evaluation` first; it verifies the completed neural evidence
+and writes a hash-addressed plan without loading locked outcomes. Then pass that
+exact hash to `research-locked-evaluation`. The evaluator has no replacement mode,
+uses fixed development-derived epoch counts, and refuses to run again after its
+completion marker exists. Only the manifest's post-development final-test sessions
+are scored; earlier reserved locked dates remain untouched.
+
 ## Outputs and resumption
 
 Multi-session output contains `terminal_summary.txt`, `run_summary.json`, one native

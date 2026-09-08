@@ -74,6 +74,37 @@ class TrainingResult:
     validation_elapsed_seconds: float
 
 
+@attrs.frozen
+class FixedEpochMetric:
+    """Record one outcome-independent final-training epoch."""
+
+    epoch: int
+    training_loss: float
+    gradient_norm: float
+    optimizer_step: int
+
+
+@attrs.frozen
+class FixedTrainingState:
+    """Capture a resumable fixed-duration fit at an epoch boundary."""
+
+    epoch: int
+    classifier_state: Mapping[str, torch.Tensor]
+    optimizer_state: Mapping[str, object]
+    history: tuple[FixedEpochMetric, ...]
+    torch_random_state: torch.Tensor
+
+
+@attrs.frozen
+class FixedTrainingResult:
+    """Describe a fit whose duration was fixed before evaluation."""
+
+    history: tuple[FixedEpochMetric, ...]
+    epochs_completed: int
+    latest_state: FixedTrainingState
+    fit_elapsed_seconds: float
+
+
 class SequenceDataset(torch_data.Dataset[tuple[torch.Tensor, ...]]):
     """Expose lazy overlapping windows over one immutable feature matrix."""
 
@@ -592,6 +623,100 @@ def fit_classifier(
         latest_state=latest_state,
         fit_elapsed_seconds=time.perf_counter() - fit_started,
         validation_elapsed_seconds=validation_elapsed_seconds,
+    )
+
+
+def fit_classifier_fixed_epochs(
+    *,
+    classifier: nn.Module,
+    training_data: SequenceDataset,
+    device: torch.device,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    weight_decay: float,
+    gradient_clip_norm: float,
+    random_seed: int,
+    resume_state: FixedTrainingState | None = None,
+    epoch_observer: Callable[[FixedEpochMetric], None] | None = None,
+    checkpoint_observer: Callable[[FixedTrainingState], None] | None = None,
+) -> FixedTrainingResult:
+    """Fit for an immutable epoch count without consulting evaluation outcomes."""
+    if isinstance(epochs, bool) or epochs <= 0:
+        raise ValueError("epochs must be positive")
+    if isinstance(batch_size, bool) or batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    started = time.perf_counter()
+    classifier.to(device)
+    optimizer = torch.optim.AdamW(
+        classifier.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
+    loss_function = nn.CrossEntropyLoss()
+    history: list[FixedEpochMetric] = []
+    start_epoch = 1
+    if resume_state is not None:
+        if resume_state.epoch > epochs:
+            raise ValueError("fixed-training checkpoint exceeds planned epochs")
+        classifier.load_state_dict(resume_state.classifier_state)
+        optimizer.load_state_dict(cast(dict[str, object], resume_state.optimizer_state))
+        history.extend(resume_state.history)
+        start_epoch = resume_state.epoch + 1
+        torch.random.set_rng_state(resume_state.torch_random_state.cpu())
+    optimizer_step = history[-1].optimizer_step if history else 0
+    latest_state = resume_state
+    for epoch in range(start_epoch, epochs + 1):
+        generator = torch.Generator().manual_seed(random_seed + epoch)
+        torch.empty((), dtype=torch.int64).random_(generator=generator)
+        shuffled_indices = torch.randperm(len(training_data), generator=generator)
+        classifier.train()
+        training_loss = torch.zeros((), dtype=torch.float64, device=device)
+        maximum_gradient = torch.zeros((), device=device)
+        examples = 0
+        for start in range(0, len(training_data), batch_size):
+            lob, auxiliary, labels, _ = training_data.batch(
+                indices=shuffled_indices[start : start + batch_size]
+            )
+            optimizer.zero_grad(set_to_none=True)
+            logits = classifier(lob.to(device), auxiliary.to(device))
+            loss = loss_function(logits, labels.to(device))
+            if not bool(torch.isfinite(loss.detach()).item()):
+                raise TrainingDivergedError("training loss is not finite")
+            loss.backward()
+            gradient = torch.nn.utils.clip_grad_norm_(
+                classifier.parameters(), max_norm=gradient_clip_norm
+            ).detach()
+            if not bool(torch.isfinite(gradient).item()):
+                raise TrainingDivergedError("gradient norm is not finite")
+            optimizer.step()
+            optimizer_step += 1
+            training_loss += loss.detach().to(torch.float64) * len(labels)
+            maximum_gradient = torch.maximum(maximum_gradient, gradient)
+            examples += len(labels)
+        metric = FixedEpochMetric(
+            epoch=epoch,
+            training_loss=float(training_loss.item()) / max(examples, 1),
+            gradient_norm=float(maximum_gradient.item()),
+            optimizer_step=optimizer_step,
+        )
+        history.append(metric)
+        latest_state = FixedTrainingState(
+            epoch=epoch,
+            classifier_state=_copy_state(state=classifier.state_dict()),
+            optimizer_state=cast(Mapping[str, object], optimizer.state_dict()),
+            history=tuple(history),
+            torch_random_state=torch.random.get_rng_state().clone(),
+        )
+        if epoch_observer is not None:
+            epoch_observer(metric)
+        if checkpoint_observer is not None:
+            checkpoint_observer(latest_state)
+    if latest_state is None:
+        raise ValueError("fixed training produced no checkpoint")
+    return FixedTrainingResult(
+        history=tuple(history),
+        epochs_completed=latest_state.epoch,
+        latest_state=latest_state,
+        fit_elapsed_seconds=time.perf_counter() - started,
     )
 
 

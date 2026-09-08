@@ -195,6 +195,58 @@ time uv run --no-sync ebs-tft research-neural-benchmark \
 Stopping a Pod can lose only the unfinished portion of the current epoch. Completed
 cells and the latest completed epoch remain reusable on the volume disk.
 
+## Frozen locked evaluation
+
+After the neural benchmark reports `64/64`, do **not** run those cells again. Pull
+the locked-evaluation implementation, bootstrap the migrated Pod, and verify that
+the completed development artifacts are still present:
+
+```bash
+cd /workspace/ebs-tft
+git pull --ff-only
+bash scripts/runpod/bootstrap.sh
+uv run python scripts/runpod/verify_environment.py
+cat notebooks/research_protocol_outputs/neural_benchmark/gate_decision.json
+find notebooks/research_protocol_outputs/neural_benchmark/cells \
+  -name cell_summary.json | wc -l
+```
+
+The count must be `64`. Next freeze the final plan. This command reads development
+artifacts only; it does not reconstruct or score a locked session:
+
+```bash
+uv run --no-sync ebs-tft research-freeze-locked-evaluation \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml
+```
+
+Save the printed `plan_sha256`. The plan mechanically admits only candidates from
+the development gate and fixes each final training duration to the upper median of
+its best epoch across development folds. It uses the union of development-fold
+sessions for fitting, the manifest's four post-development March sessions for the
+final test, and leaves all earlier reserved locked dates unused.
+
+Only after reviewing the frozen plan, run its exact hash inside tmux:
+
+```bash
+export TERM=xterm-256color
+tmux new -s ebs-locked
+cd /workspace/ebs-tft
+set -o pipefail
+time uv run --no-sync ebs-tft research-locked-evaluation \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml \
+  --plan-sha256 PASTE_THE_PRINTED_HASH_HERE \
+  2>&1 | tee notebooks/locked_evaluation_terminal.log
+```
+
+There is deliberately no `--replace-output` option. Training has no locked
+validation input and cannot early-stop on final outcomes. Each of the four final
+model/seed cells checkpoints after every fixed training epoch; after an interruption,
+rerun the identical command with the identical plan hash. A completed locked run is
+immutable and refuses a rerun. Do not change the policy or retune after its results
+are visible.
+
 ## Platform references
 
 - [Runpod: connect with VS Code Remote SSH](https://docs.runpod.io/pods/configuration/connect-to-ide)
