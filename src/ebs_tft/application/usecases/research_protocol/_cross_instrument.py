@@ -97,7 +97,9 @@ def freeze_plan(
     recomputed_decision = _locked._locked_decision(
         comparisons=pl.read_csv(locked_comparisons_path), protocol=protocol
     )
-    if locked_decision != recomputed_decision:
+    if _normalized_locked_decision(locked_decision) != _normalized_locked_decision(
+        recomputed_decision
+    ):
         raise ValueError("locked decision does not match its comparison evidence")
     if (
         locked_summary.get("locked_evaluation_used") is not True
@@ -1010,7 +1012,9 @@ def _comparisons(
     rows: list[dict[str, object]] = []
     dimensions = neural.select(
         "instrument", "model", "depth", "horizon_steps", "horizon_milliseconds"
-    ).unique()
+    ).unique().sort(
+        ["instrument", "model", "depth", "horizon_steps", "horizon_milliseconds"]
+    )
     for dimension in dimensions.iter_rows(named=True):
         selected = neural.filter(
             (pl.col("instrument") == dimension["instrument"])
@@ -1057,7 +1061,7 @@ def _decision(
     confirmed: list[dict[str, object]] = []
     dimensions = comparisons.select(
         "instrument", "model", "depth", "horizon_milliseconds"
-    ).unique()
+    ).unique().sort(["instrument", "model", "depth", "horizon_milliseconds"])
     for dimension in dimensions.iter_rows(named=True):
         rows = comparisons.filter(
             (pl.col("instrument") == dimension["instrument"])
@@ -1090,3 +1094,17 @@ def _decision(
         "neural_retraining_used": False,
         "retuning_permitted": False,
     }
+
+
+def _normalized_locked_decision(
+    decision: dict[str, object],
+) -> dict[str, object]:
+    """Normalize the semantically unordered candidate list for verification."""
+    normalized = dict(decision)
+    candidates = normalized.get("confirmed_candidates")
+    if isinstance(candidates, list):
+        normalized["confirmed_candidates"] = sorted(
+            candidates,
+            key=lambda item: json.dumps(item, sort_keys=True),
+        )
+    return normalized

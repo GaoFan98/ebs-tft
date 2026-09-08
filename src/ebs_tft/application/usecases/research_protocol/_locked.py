@@ -1008,7 +1008,7 @@ def _locked_decision(
     evidence: dict[str, bool] = {}
     dimensions = comparisons.select(
         "model", "depth", "horizon_milliseconds"
-    ).unique()
+    ).unique().sort(["model", "depth", "horizon_milliseconds"])
     for dimension in dimensions.iter_rows(named=True):
         rows = comparisons.filter(
             (pl.col("model") == dimension["model"])
