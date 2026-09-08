@@ -247,6 +247,48 @@ rerun the identical command with the identical plan hash. A completed locked run
 immutable and refuses a rerun. Do not change the policy or retune after its results
 are visible.
 
+## Frozen cross-instrument evaluation
+
+After the locked EUR/USD decision is complete, evaluate geographic transfer without
+another model search or training run. The cross-instrument workflow reuses the four
+frozen EUR/USD checkpoints, reconstructs the same 40-session EUR/USD development
+scaler and logistic comparator, and performs inference on the four final-test dates
+for both EUR/JPY and USD/JPY. This is eight neural inference cells in total.
+
+First freeze the exact targets and checkpoint hashes. This command verifies the
+locked decision and source artifacts but does not reconstruct or score target
+sessions:
+
+```bash
+cd /workspace/ebs-tft
+uv run --no-sync ebs-tft research-freeze-cross-instrument \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml
+```
+
+Save and review the printed `plan_sha256`. The plan must report EUR/JPY and USD/JPY,
+four final-test sessions per instrument, eight inference cells, target outcomes not
+inspected, and neural retraining not permitted. Then run that exact plan inside
+tmux:
+
+```bash
+export TERM=xterm-256color
+tmux new -s ebs-transfer
+cd /workspace/ebs-tft
+set -o pipefail
+time uv run --no-sync ebs-tft research-cross-instrument \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml \
+  --plan-sha256 PASTE_THE_PRINTED_HASH_HERE \
+  2>&1 | tee notebooks/cross_instrument_terminal.log
+```
+
+There is no replacement mode and no neural optimization. Each target/model/seed
+inference cell is published atomically; rerun the identical command and plan hash
+after an interruption to resume. A completed run is immutable. Its decision compares
+each transferred model with the EUR/USD-trained logistic baseline using paired
+target-session bootstrap intervals for macro F1 and MCC.
+
 ## Platform references
 
 - [Runpod: connect with VS Code Remote SSH](https://docs.runpod.io/pods/configuration/connect-to-ide)

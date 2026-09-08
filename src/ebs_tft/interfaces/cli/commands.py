@@ -255,6 +255,58 @@ def research_locked_evaluation(
         typer.echo(str(exc))
 
 
+@app.command("research-freeze-cross-instrument")
+def research_freeze_cross_instrument(
+    config: Path = typer.Option(
+        Path("notebooks/research_protocol.yaml"), "--config"
+    ),
+    policy: Path = typer.Option(
+        Path("notebooks/research_neural_benchmark.yaml"), "--policy"
+    ),
+) -> None:
+    """Freeze transfer targets and checkpoints without reading target outcomes."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    research_protocol.freeze_cross_instrument_plan(
+        protocol=loaded_protocol,
+        protocol_path=config.resolve(),
+        policy_path=policy.resolve(),
+    )
+
+
+@app.command("research-cross-instrument")
+def research_cross_instrument(
+    plan_sha256: str = typer.Option(
+        ..., "--plan-sha256", help="Exact SHA-256 printed by the freeze command."
+    ),
+    config: Path = typer.Option(
+        Path("notebooks/research_protocol.yaml"), "--config"
+    ),
+    policy: Path = typer.Option(
+        Path("notebooks/research_neural_benchmark.yaml"), "--policy"
+    ),
+    maximum_new_cells: int | None = typer.Option(
+        None,
+        "--maximum-new-cells",
+        min=1,
+        help="Pause after this many newly completed inference cells.",
+    ),
+) -> None:
+    """Evaluate frozen EUR/USD checkpoints on the two target instruments."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_policy = research_protocol.load_policy(path=policy)
+    try:
+        research_protocol.run_cross_instrument_evaluation(
+            protocol=loaded_protocol,
+            protocol_path=config.resolve(),
+            policy=loaded_policy,
+            policy_path=policy.resolve(),
+            plan_sha256=plan_sha256,
+            maximum_new_cells=maximum_new_cells,
+        )
+    except research_protocol.CrossInstrumentPausedError as exc:
+        typer.echo(str(exc))
+
+
 def main() -> None:
     """Invoke the project CLI."""
     app()

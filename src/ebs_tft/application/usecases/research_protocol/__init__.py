@@ -16,6 +16,17 @@ from ebs_tft.application.usecases.research_protocol._config import (
     UnableToLoadResearchProtocolError,
     load_protocol,
 )
+from ebs_tft.application.usecases.research_protocol._cross_instrument import (
+    CrossInstrumentPausedError,
+    CrossInstrumentPlanResult,
+    CrossInstrumentResult,
+)
+from ebs_tft.application.usecases.research_protocol._cross_instrument import (
+    freeze_plan as freeze_cross_instrument_plan,
+)
+from ebs_tft.application.usecases.research_protocol._cross_instrument import (
+    run as run_cross_instrument_evaluation,
+)
 from ebs_tft.application.usecases.research_protocol._locked import (
     LockedEvaluationPausedError,
     LockedEvaluationPlanResult,
@@ -49,6 +60,9 @@ __all__ = [
     "SessionAuditResult",
     "BaselineGateResult",
     "UnableToLoadResearchProtocolError",
+    "CrossInstrumentPausedError",
+    "CrossInstrumentPlanResult",
+    "CrossInstrumentResult",
     "ModelProtocolVerificationResult",
     "NeuralBenchmarkResult",
     "NeuralBenchmarkPausedError",
@@ -64,4 +78,6 @@ __all__ = [
     "run_neural_benchmark",
     "freeze_locked_evaluation_plan",
     "run_locked_evaluation",
+    "freeze_cross_instrument_plan",
+    "run_cross_instrument_evaluation",
 ]

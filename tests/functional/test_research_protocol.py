@@ -23,7 +23,12 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
     output_dir = tmp_path / "outputs"
     dates = tuple(datetime.date(2024, 1, day) for day in range(1, 7))
     for trading_date in dates:
-        _write_session(data_dir=data_dir, trading_date=trading_date)
+        for instrument in orderbook_models.Instrument:
+            _write_session(
+                data_dir=data_dir,
+                trading_date=trading_date,
+                instrument=instrument,
+            )
     protocol = _protocol(
         data_dir=data_dir, output_dir=output_dir, locked_dates=dates[-2:]
     )
@@ -35,10 +40,10 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
     )
 
     audit_data = pl.read_csv(audit.audit_path)
-    assert audit_data.height == 6
+    assert audit_data.height == 18
     locked = audit_data.filter(pl.col("evaluation_locked"))
-    assert locked.height == 2
-    assert locked["total_h100"].null_count() == 2
+    assert locked.height == 6
+    assert locked["total_h100"].null_count() == 6
     with audit.manifest_path.open(encoding="utf-8") as stream:
         manifest = yaml.safe_load(stream)
     folds = manifest["development_folds"]["EUR_USD"]
@@ -246,6 +251,67 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
             policy_path=policy_path,
             plan_sha256=plan.plan_sha256,
         )
+
+    locked_comparisons = pl.read_csv(locked.comparisons_path).with_columns(
+        pl.when(
+            (pl.col("model") == "deeplob_direction")
+            & pl.col("metric").is_in(["macro_f1", "mcc"])
+        )
+        .then(0.01)
+        .otherwise(pl.col("confidence_lower"))
+        .alias("confidence_lower")
+    )
+    locked_comparisons.write_csv(locked.comparisons_path)
+    decision["confirmed_by_candidate"]["deeplob_direction:d1:h100"] = True
+    decision["confirmed_candidates"] = [
+        {
+            "model": "deeplob_direction",
+            "depth": 1,
+            "horizon_milliseconds": 100,
+        }
+    ]
+    locked.decision_path.write_text(json.dumps(decision, indent=2), encoding="utf-8")
+    cross_plan = research_protocol.freeze_cross_instrument_plan(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        policy_path=policy_path,
+    )
+    frozen_cross = json.loads(cross_plan.plan_path.read_text(encoding="utf-8"))
+    assert frozen_cross["target_outcomes_inspected"] is False
+    assert frozen_cross["neural_retraining_permitted"] is False
+    assert len(frozen_cross["cells"]) == 4
+
+    with pytest.raises(research_protocol.CrossInstrumentPausedError):
+        research_protocol.run_cross_instrument_evaluation(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            policy=policy,
+            policy_path=policy_path,
+            plan_sha256=cross_plan.plan_sha256,
+            maximum_new_cells=1,
+        )
+    cross = research_protocol.run_cross_instrument_evaluation(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        policy=policy,
+        policy_path=policy_path,
+        plan_sha256=cross_plan.plan_sha256,
+    )
+    cross_metrics = pl.read_csv(cross.metrics_path)
+    assert cross_metrics.height == 12
+    assert set(cross_metrics["instrument"]) == {"EUR_JPY", "USD_JPY"}
+    assert set(cross_metrics["model"]) == {"deeplob_direction", "logistic"}
+    cross_decision = json.loads(cross.decision_path.read_text(encoding="utf-8"))
+    assert cross_decision["cross_instrument_outcomes_used"] is True
+    assert cross_decision["neural_retraining_used"] is False
+    with pytest.raises(ValueError, match="complete"):
+        research_protocol.run_cross_instrument_evaluation(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            policy=policy,
+            policy_path=policy_path,
+            plan_sha256=cross_plan.plan_sha256,
+        )
     assert decision["locked_evaluation_used"] is True
     assert decision["retuning_permitted"] is False
     with pytest.raises(ValueError, match="already complete"):
@@ -267,7 +333,7 @@ def _protocol(
     return research_models.ResearchProtocol(
         data_dir=data_dir,
         output_dir=output_dir,
-        instruments=(orderbook_models.Instrument.EUR_USD,),
+        instruments=tuple(orderbook_models.Instrument),
         years=(2024,),
         state_interval_milliseconds=100,
         forecast_horizons_milliseconds=(100,),
@@ -308,24 +374,35 @@ def _protocol(
     )
 
 
-def _write_session(*, data_dir: Path, trading_date: datetime.date) -> None:
+def _write_session(
+    *,
+    data_dir: Path,
+    trading_date: datetime.date,
+    instrument: orderbook_models.Instrument,
+) -> None:
     year_dir = data_dir / str(trading_date.year)
     year_dir.mkdir(parents=True, exist_ok=True)
-    path = year_dir / (f"{trading_date:%Y%m%d}-EBS_LVL2_EUR_USD_0.csv.gz")
+    path = year_dir / (
+        f"{trading_date:%Y%m%d}-EBS_LVL2_{instrument.value}_0.csv.gz"
+    )
     mid_offsets = (0, 1, 1, 0, -1, -1)
+    base_mid = 1.1 if instrument is orderbook_models.Instrument.EUR_USD else 150.0
+    tick = 0.00001 if instrument is orderbook_models.Instrument.EUR_USD else 0.001
+    decimals = 5 if instrument is orderbook_models.Instrument.EUR_USD else 3
     rows: list[str] = []
     for step in range(30):
         timestamp = datetime.datetime.combine(
             trading_date, datetime.time(), tzinfo=datetime.UTC
         ) + datetime.timedelta(milliseconds=step * 100)
-        mid = 1.10000 + mid_offsets[step % len(mid_offsets)] * 0.00001
+        mid = base_mid + mid_offsets[step % len(mid_offsets)] * tick
         for side in (0, 1):
             for level in range(1, 11):
                 direction = -1 if side == 0 else 1
-                price = mid + direction * (0.00001 * level)
+                price = mid + direction * (tick * level)
                 rows.append(
                     f"{timestamp:%Y/%m/%d},{timestamp:%H:%M:%S.%f}"[:-3]
-                    + f",EUR/USD,Q,{side},{level},{price:.5f},1000000,1\n"
+                    + f",{instrument.to_symbol()},Q,{side},{level},"
+                    + f"{price:.{decimals}f},1000000,1\n"
                 )
     with gzip.open(path, mode="wt", encoding="utf-8", newline="") as stream:
         stream.writelines(rows)

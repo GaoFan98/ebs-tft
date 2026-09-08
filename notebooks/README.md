@@ -261,6 +261,16 @@ uses fixed development-derived epoch counts, and refuses to run again after its
 completion marker exists. Only the manifest's post-development final-test sessions
 are scored; earlier reserved locked dates remain untouched.
 
+Cross-instrument evaluation uses the same boundary. After the locked decision is
+complete, `research-freeze-cross-instrument` freezes the two target instruments,
+their matching final-test dates, and the hashes of the four final EUR/USD
+checkpoints without reading target outcomes. Pass its exact plan hash to
+`research-cross-instrument`. That command performs eight inference cells (two
+instruments by two models by two seeds), with no neural retraining or hyperparameter
+selection, and compares them with a logistic model fitted only on the frozen EUR/USD
+development sessions. Completed cells resume atomically and a completed transfer
+run cannot be replaced.
+
 ## Outputs and resumption
 
 Multi-session output contains `terminal_summary.txt`, `run_summary.json`, one native
