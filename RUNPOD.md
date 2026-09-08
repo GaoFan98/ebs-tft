@@ -341,6 +341,23 @@ atomic checkpoint. After interruption, rerun with the same plan hash; optionally
 `--maximum-new-sessions N` for a deliberately bounded first pass. A completed run is
 immutable and cannot be replaced.
 
+## Final 2024 evidence report
+
+After restoring the locked and cross-instrument archives under
+`notebooks/research_protocol_outputs/`, build the reporting-only analysis locally or
+on a CPU Pod:
+
+```bash
+uv run --no-sync ebs-tft research-final-report \
+  --config notebooks/research_protocol.yaml
+```
+
+The command verifies frozen plan hashes and independently recomputes every recorded
+gate decision before writing tables, SVG forest plots, a Markdown report, and a
+SHA-256 manifest under `notebooks/research_final_analysis_outputs/`. It performs no
+fitting, inference, threshold adjustment, or outcome-dependent model selection. Use
+`--replace-output` only to rebuild derived reporting files from the same evidence.
+
 ## Platform references
 
 - [Runpod: connect with VS Code Remote SSH](https://docs.runpod.io/pods/configuration/connect-to-ide)

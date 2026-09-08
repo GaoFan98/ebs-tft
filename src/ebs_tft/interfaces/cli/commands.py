@@ -299,6 +299,30 @@ def research_cross_instrument(
         typer.echo(str(exc))
 
 
+@app.command("research-final-report")
+def research_final_report(
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
+    output_dir: Path = typer.Option(
+        Path("notebooks/research_final_analysis_outputs"),
+        "--output-dir",
+        help="Directory for the verified, reporting-only 2024 analysis.",
+    ),
+    replace_output: bool = typer.Option(
+        False,
+        "--replace-output",
+        help="Rebuild derived report files without changing experimental evidence.",
+    ),
+) -> None:
+    """Verify immutable 2024 evidence and build the final analysis report."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    research_protocol.run_final_report(
+        protocol=loaded_protocol,
+        protocol_path=config.resolve(),
+        output_dir=output_dir.resolve(),
+        replace_output=replace_output,
+    )
+
+
 @app.command("research-temporal-audit")
 def research_temporal_audit(
     config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),

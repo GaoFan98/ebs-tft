@@ -248,10 +248,9 @@ these 2024 EUR/USD dates before the protocol is accepted:
 
 After the development gates, create evaluation configs mechanically for the accepted
 model/horizon/depth combinations and run those dates once. EUR/JPY and USD/JPY then
-test cross-instrument generalization under the same frozen protocol. The requested
-2023 data remains the final temporal generalization sample when supplied. Monthly
-subsamples and publication-level dependence-aware confidence intervals come only
-after this first two-year test.
+test cross-instrument generalization under the same frozen protocol. An optional
+external-year dataset can later provide a separate temporal robustness test; it is
+not part of the completed 2024 evidence.
 
 The implemented boundary is a two-command handshake. Run
 `research-freeze-locked-evaluation` first; it verifies the completed neural evidence
@@ -280,6 +279,11 @@ cache, evidence, and checkpoint hashes. `research-temporal-evaluation` reuses th
 four final checkpoints without neural training, processes one session at a time,
 and is resumable at session boundaries. EUR/USD is the predeclared primary temporal
 test; USD/JPY and EUR/JPY are combined time-plus-instrument stress tests.
+
+After the one-time 2024 evaluations finish, `research-final-report` verifies their
+plan hashes and recomputes all gate decisions before producing consolidated tables,
+SVG forest plots, per-session stability evidence, and an artifact manifest. This is
+a reporting-only operation: it cannot train, tune, select, or evaluate a model.
 
 ## Outputs and resumption
 
