@@ -303,9 +303,9 @@ def research_cross_instrument(
 def research_final_report(
     config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
     output_dir: Path = typer.Option(
-        Path("notebooks/research_final_analysis_outputs"),
+        Path("reports/2024_analysis"),
         "--output-dir",
-        help="Directory for the verified, reporting-only 2024 analysis.",
+        help="Folder for the consolidated Excel report and verified tables.",
     ),
     replace_output: bool = typer.Option(
         False,

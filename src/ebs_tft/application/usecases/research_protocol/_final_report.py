@@ -11,6 +11,7 @@ from typing import cast
 
 import attrs
 import polars as pl
+import xlsxwriter
 
 from ebs_tft.application.usecases.research_protocol import (
     _cross_instrument,
@@ -54,6 +55,7 @@ def run(
     artifact_repository.prepare_run_directory(
         path=output_dir,
         replace=replace_output,
+        replacement_parent=output_dir.parent,
     )
 
     neural_comparisons = _read_csv(paths["neural_comparisons"])
@@ -168,23 +170,25 @@ def run(
         ),
     }
     _write_json(path=output_dir / "study_summary.json", value=study_summary)
-    report = _markdown_report(
+    workbook_path = output_dir / "ebs_tft_2024_analysis.xlsx"
+    _write_workbook(
+        path=workbook_path,
         summary=study_summary,
         development=development,
         locked=locked,
         cross=cross,
         absolute_metrics=absolute_metrics,
         session_deltas=session_deltas,
+        locked_metrics=locked_metrics,
+        cross_metrics=cross_metrics,
         dates=dates,
     )
-    report_path = output_dir / "report.md"
-    report_path.write_text(report, encoding="utf-8")
 
     _write_json(
         path=output_dir / "run_summary.json",
         value={
             **study_summary,
-            "report": str(report_path.resolve()),
+            "report": str(workbook_path.resolve()),
             "artifact_manifest": str((output_dir / "artifact_manifest.json").resolve()),
         },
     )
@@ -208,7 +212,7 @@ def run(
     print(f"outputs={output_dir.resolve()}")
     return FinalReportResult(
         output_dir=output_dir,
-        report_path=report_path,
+        report_path=workbook_path,
         locked_confirmed_candidates=locked_confirmed,
         confirmed_cross_instrument_transfers=cross_confirmed,
     )
@@ -503,16 +507,19 @@ def _forest_svg(*, evidence: pl.DataFrame, title: str) -> str:
     return "\n".join(elements) + "\n"
 
 
-def _markdown_report(
+def _write_workbook(
     *,
+    path: Path,
     summary: dict[str, object],
     development: pl.DataFrame,
     locked: pl.DataFrame,
     cross: pl.DataFrame,
     absolute_metrics: pl.DataFrame,
     session_deltas: pl.DataFrame,
+    locked_metrics: pl.DataFrame,
+    cross_metrics: pl.DataFrame,
     dates: list[str],
-) -> str:
+) -> None:
     development_primary = development.filter(pl.col("metric").is_in(_PRIMARY_METRICS))
     locked_primary = locked.filter(pl.col("metric").is_in(_PRIMARY_METRICS))
     cross_primary = cross.filter(pl.col("metric").is_in(_PRIMARY_METRICS))
@@ -531,138 +538,253 @@ def _markdown_report(
         )
         .sort("stage", "instrument", "model")
     )
-    return f"""\
-# EBS direction-classification study: final 2024 evidence report
-
-## Status and scope
-
-The predeclared 2024 workflow is complete. The development benchmark contained
-{summary["neural_benchmark_cells"]} neural cells and {summary["development_sessions"]}
-rolling validation sessions. Candidate selection used development evidence only.
-The one-time EUR/USD evaluation then used the four locked dates
-{", ".join(dates)}. No tuning or model selection is permitted after those outcomes.
-The frozen selected evidence spans {summary["evidence_period_start"]} through
-{summary["evidence_period_end"]}; this is a first-quarter 2024 study, not coverage of
-the complete 2024 calendar year.
-
-This is a predictive classification study. It does not establish executable trading
-profitability because transaction costs, latency, fill probability, inventory risk,
-and a trading policy were not evaluated.
-
-## Main result
-
-Both frozen 30-second EUR/USD candidates passed the locked gate against the
-same-data logistic reference on both primary metrics. In the frozen transfer test,
-only TFT on USD/JPY passed both primary metrics; DeepLOB on USD/JPY narrowly failed
-macro F1, and neither architecture passed macro F1 on EUR/JPY.
-
-### Development screening effects
-
-{_comparison_markdown(development_primary)}
-
-Only the two 30-second rows passed both primary metrics and were admitted to the
-locked evaluation. The development table is screening evidence, not a final test.
-
-### Locked EUR/USD primary effects
-
-{_comparison_markdown(locked_primary)}
-
-### Cross-instrument primary effects
-
-{_comparison_markdown(cross_primary)}
-
-The deltas are neural minus logistic after averaging the two neural seeds within
-each session. Positive values favor the neural model. Confidence intervals are the
-predeclared paired-session bootstrap intervals.
-
-## Session-level stability
-
-{_stability_markdown(stability)}
-
-## Interpretation
-
-The evidence supports a narrow conclusion: at the 30-second horizon, both neural
-architectures improved macro F1 and MCC over logistic on the held-out EUR/USD dates.
-TFT also retained a small positive advantage on USD/JPY without neural retraining.
-Transfer was not universal, because EUR/JPY failed the strict joint gate.
-
-The four confirmatory dates are the independent resampling units. Four sessions are
-too few for a broad population claim, even when a bootstrap interval excludes zero;
-the interval has limited empirical support and should be reported together with the
-per-session signs above. Results on EUR/USD, USD/JPY, and EUR/JPY for the same dates
-are not independent replications.
-
-### Absolute confirmatory metrics
-
-{_absolute_markdown(absolute_primary)}
-
-Absolute neural summaries first average the two frozen seeds within a date and then
-average the four dates. Logistic has one value per date. Standard deviations describe
-between-session variation and are not standard errors.
-
-Development comparisons across models and horizons were screening evidence, while
-the locked stage was confirmatory for only the two frozen 30-second candidates. No
-post-locked retuning, threshold adjustment, selective date removal, or rerun is
-permitted. The external-year test remains unrun because no other year is available.
-
-## Reproducibility artifacts
-
-- `primary_evidence.csv`: all primary development, locked, and transfer intervals.
-- `absolute_metric_summary.csv`: absolute session-level metric summaries.
-- `session_primary_deltas.csv`: paired primary deltas for every confirmatory date.
-- `development_primary_effects.svg`: development forest plot.
-- `confirmatory_primary_effects.svg`: locked and transfer forest plot.
-- `artifact_manifest.json`: SHA-256 hashes of every report input and output.
-- `study_summary.json`: machine-readable headline result and study state.
-"""
+    workbook = xlsxwriter.Workbook(path)
+    workbook.set_properties(
+        {
+            "title": "EBS TFT 2024 evidence report",
+            "subject": "Frozen Q1 2024 direction-classification results",
+            "author": "EBS TFT research workflow",
+            "comments": "Reporting only; no post-locked retuning permitted.",
+        }
+    )
+    formats = _workbook_formats(workbook=workbook)
+    _write_summary_sheet(
+        workbook=workbook,
+        formats=formats,
+        summary=summary,
+        dates=dates,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Primary Evidence",
+        data=pl.concat([development_primary, locked_primary, cross_primary]),
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Absolute Metrics",
+        data=absolute_primary,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Development",
+        data=development,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Locked Evaluation",
+        data=locked,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Cross Instrument",
+        data=cross,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Session Deltas",
+        data=session_deltas,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Session Stability",
+        data=stability,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="EURUSD Raw Sessions",
+        data=locked_metrics,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Transfer Raw Sessions",
+        data=cross_metrics,
+    )
+    _write_notes_sheet(workbook=workbook, formats=formats)
+    workbook.close()
 
 
-def _comparison_markdown(data: pl.DataFrame) -> str:
-    lines = [
-        "| Instrument | Model | Horizon | Metric | Mean delta | 95% CI | Pass |",
-        "|---|---|---:|---|---:|---:|:---:|",
+def _workbook_formats(
+    *, workbook: xlsxwriter.Workbook
+) -> dict[str, xlsxwriter.format.Format]:
+    return {
+        "title": workbook.add_format(
+            {"bold": True, "font_size": 18, "font_color": "#17365D"}
+        ),
+        "section": workbook.add_format(
+            {
+                "bold": True,
+                "font_size": 12,
+                "font_color": "#FFFFFF",
+                "bg_color": "#1F4E78",
+            }
+        ),
+        "header": workbook.add_format(
+            {
+                "bold": True,
+                "font_color": "#FFFFFF",
+                "bg_color": "#4472C4",
+                "border": 1,
+                "text_wrap": True,
+            }
+        ),
+        "text": workbook.add_format({"text_wrap": True, "valign": "top"}),
+        "number": workbook.add_format({"num_format": "0.000000"}),
+        "integer": workbook.add_format({"num_format": "0"}),
+        "pass": workbook.add_format({"bg_color": "#C6EFCE", "font_color": "#006100"}),
+        "fail": workbook.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006"}),
+    }
+
+
+def _write_summary_sheet(
+    *,
+    workbook: xlsxwriter.Workbook,
+    formats: dict[str, xlsxwriter.format.Format],
+    summary: dict[str, object],
+    dates: list[str],
+) -> None:
+    sheet = workbook.add_worksheet("Executive Summary")
+    sheet.hide_gridlines(2)
+    sheet.set_column("A:A", 27)
+    sheet.set_column("B:B", 95)
+    sheet.merge_range("A1:B1", "EBS TFT — Q1 2024 Evidence Report", formats["title"])
+    rows = [
+        ("Simple conclusion", summary["headline_conclusion"]),
+        (
+            "Is it good?",
+            "Promising research evidence at 30 seconds, but not enough to claim a "
+            "production-ready or profitable trading system.",
+        ),
+        (
+            "Evidence period",
+            f"{summary['evidence_period_start']} to {summary['evidence_period_end']}",
+        ),
+        (
+            "Raw-data scope",
+            "January–March 2024 only; this is not a full calendar-year study.",
+        ),
+        ("Development training sessions", summary["development_training_sessions"]),
+        ("Rolling validation sessions", summary["development_sessions"]),
+        ("Locked final sessions", ", ".join(dates)),
+        ("Neural benchmark cells", summary["neural_benchmark_cells"]),
+        ("Confirmed EUR/USD candidates", summary["locked_confirmed_candidates"]),
+        ("Confirmed transfers", summary["confirmed_cross_instrument_transfers"]),
+        ("Retuning permitted", "No"),
+        (
+            "External-year test",
+            "Not run; no external-year data is currently available.",
+        ),
     ]
-    for row in data.sort("instrument", "model", "metric").iter_rows(named=True):
-        lines.append(
-            f"| {str(row['instrument']).replace('_', '/')} "
-            f"| {str(row['model']).replace('_direction', '')} "
-            f"| {int(row['horizon_milliseconds']) // 1000}s | {row['metric']} "
-            f"| {float(row['mean_delta']):.6f} "
-            f"| [{float(row['confidence_lower']):.6f}, "
-            f"{float(row['confidence_upper']):.6f}] "
-            f"| {'yes' if row['metric_passed'] else 'no'} |"
+    sheet.write_row(2, 0, ("Item", "Result"), formats["header"])
+    for row_index, (label, value) in enumerate(rows, start=3):
+        sheet.write(row_index, 0, label)
+        sheet.write(row_index, 1, value, formats["text"])
+    sheet.set_row(3, 44)
+    sheet.freeze_panes(3, 0)
+
+
+def _write_frame_sheet(
+    *,
+    workbook: xlsxwriter.Workbook,
+    formats: dict[str, xlsxwriter.format.Format],
+    name: str,
+    data: pl.DataFrame,
+) -> None:
+    sheet = workbook.add_worksheet(name)
+    sheet.freeze_panes(1, 0)
+    sheet.autofilter(0, 0, data.height, len(data.columns) - 1)
+    for column_index, column in enumerate(data.columns):
+        sheet.write(0, column_index, column, formats["header"])
+        values = data[column].to_list()
+        width = min(
+            42, max(len(column) + 2, *(len(str(value)) + 2 for value in values))
         )
-    return "\n".join(lines)
+        sheet.set_column(column_index, column_index, width)
+        for row_index, value in enumerate(values, start=1):
+            cell_format = None
+            if isinstance(value, bool):
+                cell_format = formats["pass"] if value else formats["fail"]
+            elif isinstance(value, float):
+                cell_format = formats["number"]
+            elif isinstance(value, int):
+                cell_format = formats["integer"]
+            sheet.write(row_index, column_index, value, cell_format)
 
 
-def _stability_markdown(data: pl.DataFrame) -> str:
-    lines = [
-        "| Stage | Instrument | Model | Macro F1 + | MCC + | Both + | Sessions |",
-        "|---|---|---|---:|---:|---:|---:|",
+def _write_notes_sheet(
+    *,
+    workbook: xlsxwriter.Workbook,
+    formats: dict[str, xlsxwriter.format.Format],
+) -> None:
+    sheet = workbook.add_worksheet("Statistical Notes")
+    sheet.hide_gridlines(2)
+    sheet.set_column("A:A", 28)
+    sheet.set_column("B:B", 110)
+    sheet.write_row(0, 0, ("Topic", "Explanation"), formats["header"])
+    notes = [
+        (
+            "Primary metrics",
+            "Macro F1 and Matthews correlation coefficient (MCC); higher is better.",
+        ),
+        (
+            "Delta",
+            "Neural-model metric minus the logistic-reference metric after "
+            "averaging neural seeds within each session.",
+        ),
+        (
+            "Confidence interval",
+            "Predeclared 95% paired-session bootstrap interval. Sessions, not "
+            "overlapping 100 ms observations, are the resampling units.",
+        ),
+        (
+            "Strict pass rule",
+            "Both macro F1 and MCC must have confidence lower bounds strictly "
+            "above zero.",
+        ),
+        (
+            "Supporting metrics",
+            "Balanced accuracy, log loss, and multiclass Brier score are reported "
+            "but do not control the primary decision.",
+        ),
+        (
+            "Small sample",
+            "Only four locked dates are available. This sharply limits "
+            "generalization even when the interval excludes zero.",
+        ),
+        (
+            "Cross-instrument dependence",
+            "The three instruments share evaluation dates, so their results are "
+            "not independent replications.",
+        ),
+        (
+            "Economic limitation",
+            "Prediction quality is not trading profitability. Costs, spread, "
+            "latency, fills, inventory, and a trading policy were not tested.",
+        ),
+        (
+            "Development detail",
+            "The downloaded archive contains complete five-metric aggregate "
+            "comparisons across 20 validation sessions, but not the development "
+            "stage's raw per-session table.",
+        ),
+        (
+            "No retuning",
+            "Locked and transfer outcomes may be reported but must not be used to "
+            "retune or rerun the frozen experiment.",
+        ),
     ]
-    for row in data.iter_rows(named=True):
-        lines.append(
-            f"| {row['stage']} | {str(row['instrument']).replace('_', '/')} "
-            f"| {str(row['model']).replace('_direction', '')} "
-            f"| {row['macro_f1_positive']} | {row['mcc_positive']} "
-            f"| {row['both_positive']} | {row['sessions']} |"
-        )
-    return "\n".join(lines)
-
-
-def _absolute_markdown(data: pl.DataFrame) -> str:
-    lines = [
-        "| Stage | Instrument | Model | Metric | Mean | Session SD |",
-        "|---|---|---|---|---:|---:|",
-    ]
-    for row in data.iter_rows(named=True):
-        lines.append(
-            f"| {row['stage']} | {str(row['instrument']).replace('_', '/')} "
-            f"| {str(row['model']).replace('_direction', '')} | {row['metric']} "
-            f"| {float(row['mean']):.6f} "
-            f"| {float(row['standard_deviation']):.6f} |"
-        )
-    return "\n".join(lines)
+    for row_index, (topic, explanation) in enumerate(notes, start=1):
+        sheet.write(row_index, 0, topic)
+        sheet.write(row_index, 1, explanation, formats["text"])
+        sheet.set_row(row_index, 34)
 
 
 def _normalized_decision(value: dict[str, object]) -> dict[str, object]:

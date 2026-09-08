@@ -48,7 +48,7 @@ dependencies = [
     # scipy: dependence-aware statistical analysis of observation-level losses.
     "scipy==1.18.0",
 
-    # API and CLI serving 
+    # API and CLI serving
     "fastapi==0.141.1",
     "uvicorn[standard]==0.52.0",
 
@@ -85,6 +85,8 @@ dependencies = [
     "pyyaml==6.0.3",
 
     "python-dotenv==1.2.2",
+    # xlsxwriter: produces the consolidated, shareable research workbook.
+    "xlsxwriter==3.2.9",
 ]
 
 # [project.optional-dependencies] — dev tools

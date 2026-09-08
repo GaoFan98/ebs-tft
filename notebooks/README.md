@@ -282,8 +282,9 @@ test; USD/JPY and EUR/JPY are combined time-plus-instrument stress tests.
 
 After the one-time 2024 evaluations finish, `research-final-report` verifies their
 plan hashes and recomputes all gate decisions before producing consolidated tables,
-SVG forest plots, per-session stability evidence, and an artifact manifest. This is
-a reporting-only operation: it cannot train, tune, select, or evaluate a model.
+an Excel workbook, SVG forest plots, per-session stability evidence, and an artifact
+manifest under `reports/2024_analysis/`. This is a reporting-only operation: it
+cannot train, tune, select, or evaluate a model.
 
 ## Outputs and resumption
 

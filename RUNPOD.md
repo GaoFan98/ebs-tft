@@ -353,8 +353,8 @@ uv run --no-sync ebs-tft research-final-report \
 ```
 
 The command verifies frozen plan hashes and independently recomputes every recorded
-gate decision before writing tables, SVG forest plots, a Markdown report, and a
-SHA-256 manifest under `notebooks/research_final_analysis_outputs/`. It performs no
+gate decision before writing one consolidated Excel workbook, verified CSV tables,
+SVG forest plots, and a SHA-256 manifest under `reports/2024_analysis/`. It performs no
 fitting, inference, threshold adjustment, or outcome-dependent model selection. Use
 `--replace-output` only to rebuild derived reporting files from the same evidence.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 import attrs
@@ -47,7 +48,13 @@ def test_builds_verified_final_report(tmp_path: Path) -> None:
 
     assert result.locked_confirmed_candidates == 2
     assert result.confirmed_cross_instrument_transfers == 1
-    assert (output / "report.md").is_file()
+    workbook = output / "ebs_tft_2024_analysis.xlsx"
+    assert workbook.is_file()
+    with zipfile.ZipFile(workbook) as archive:
+        workbook_xml = archive.read("xl/workbook.xml").decode()
+    assert "Executive Summary" in workbook_xml
+    assert "EURUSD Raw Sessions" in workbook_xml
+    assert "Transfer Raw Sessions" in workbook_xml
     assert (output / "primary_evidence.csv").is_file()
     assert (output / "confirmatory_primary_effects.svg").is_file()
     summary = json.loads((output / "study_summary.json").read_text())
