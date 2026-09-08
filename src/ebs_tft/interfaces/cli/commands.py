@@ -203,9 +203,7 @@ def research_neural_benchmark(
 
 @app.command("research-freeze-locked-evaluation")
 def research_freeze_locked_evaluation(
-    config: Path = typer.Option(
-        Path("notebooks/research_protocol.yaml"), "--config"
-    ),
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
     policy: Path = typer.Option(
         Path("notebooks/research_neural_benchmark.yaml"), "--policy"
     ),
@@ -226,9 +224,7 @@ def research_locked_evaluation(
     plan_sha256: str = typer.Option(
         ..., "--plan-sha256", help="Exact SHA-256 printed by the freeze command."
     ),
-    config: Path = typer.Option(
-        Path("notebooks/research_protocol.yaml"), "--config"
-    ),
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
     policy: Path = typer.Option(
         Path("notebooks/research_neural_benchmark.yaml"), "--policy"
     ),
@@ -257,9 +253,7 @@ def research_locked_evaluation(
 
 @app.command("research-freeze-cross-instrument")
 def research_freeze_cross_instrument(
-    config: Path = typer.Option(
-        Path("notebooks/research_protocol.yaml"), "--config"
-    ),
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
     policy: Path = typer.Option(
         Path("notebooks/research_neural_benchmark.yaml"), "--policy"
     ),
@@ -278,9 +272,7 @@ def research_cross_instrument(
     plan_sha256: str = typer.Option(
         ..., "--plan-sha256", help="Exact SHA-256 printed by the freeze command."
     ),
-    config: Path = typer.Option(
-        Path("notebooks/research_protocol.yaml"), "--config"
-    ),
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
     policy: Path = typer.Option(
         Path("notebooks/research_neural_benchmark.yaml"), "--policy"
     ),
@@ -304,6 +296,90 @@ def research_cross_instrument(
             maximum_new_cells=maximum_new_cells,
         )
     except research_protocol.CrossInstrumentPausedError as exc:
+        typer.echo(str(exc))
+
+
+@app.command("research-temporal-audit")
+def research_temporal_audit(
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
+    temporal_policy: Path = typer.Option(
+        Path("notebooks/research_temporal_evaluation.yaml"), "--temporal-policy"
+    ),
+) -> None:
+    """Audit the external-year sample without calculating target outcomes."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_temporal_policy = research_protocol.load_temporal_policy(
+        path=temporal_policy
+    )
+    research_protocol.run_temporal_audit(
+        protocol=loaded_protocol,
+        protocol_path=config.resolve(),
+        temporal_policy=loaded_temporal_policy,
+        temporal_policy_path=temporal_policy.resolve(),
+    )
+
+
+@app.command("research-freeze-temporal-evaluation")
+def research_freeze_temporal_evaluation(
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
+    policy: Path = typer.Option(
+        Path("notebooks/research_neural_benchmark.yaml"), "--policy"
+    ),
+    temporal_policy: Path = typer.Option(
+        Path("notebooks/research_temporal_evaluation.yaml"), "--temporal-policy"
+    ),
+) -> None:
+    """Freeze external-year sessions without reading their outcomes."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_temporal_policy = research_protocol.load_temporal_policy(
+        path=temporal_policy
+    )
+    research_protocol.freeze_temporal_evaluation_plan(
+        protocol=loaded_protocol,
+        protocol_path=config.resolve(),
+        neural_policy_path=policy.resolve(),
+        temporal_policy=loaded_temporal_policy,
+        temporal_policy_path=temporal_policy.resolve(),
+    )
+
+
+@app.command("research-temporal-evaluation")
+def research_temporal_evaluation(
+    plan_sha256: str = typer.Option(
+        ..., "--plan-sha256", help="Exact SHA-256 printed by the freeze command."
+    ),
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
+    policy: Path = typer.Option(
+        Path("notebooks/research_neural_benchmark.yaml"), "--policy"
+    ),
+    temporal_policy: Path = typer.Option(
+        Path("notebooks/research_temporal_evaluation.yaml"), "--temporal-policy"
+    ),
+    maximum_new_sessions: int | None = typer.Option(
+        None,
+        "--maximum-new-sessions",
+        min=1,
+        help="Pause after this many newly completed instrument sessions.",
+    ),
+) -> None:
+    """Run the frozen, inference-only external-year evaluation."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_policy = research_protocol.load_policy(path=policy)
+    loaded_temporal_policy = research_protocol.load_temporal_policy(
+        path=temporal_policy
+    )
+    try:
+        research_protocol.run_temporal_evaluation(
+            protocol=loaded_protocol,
+            protocol_path=config.resolve(),
+            neural_policy=loaded_policy,
+            neural_policy_path=policy.resolve(),
+            temporal_policy=loaded_temporal_policy,
+            temporal_policy_path=temporal_policy.resolve(),
+            plan_sha256=plan_sha256,
+            maximum_new_sessions=maximum_new_sessions,
+        )
+    except research_protocol.TemporalEvaluationPausedError as exc:
         typer.echo(str(exc))
 
 

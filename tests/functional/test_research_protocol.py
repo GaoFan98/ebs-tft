@@ -29,6 +29,17 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
                 trading_date=trading_date,
                 instrument=instrument,
             )
+    temporal_dates = (
+        datetime.date(2023, 12, 28),
+        datetime.date(2023, 12, 29),
+    )
+    for trading_date in temporal_dates:
+        for instrument in orderbook_models.Instrument:
+            _write_session(
+                data_dir=data_dir,
+                trading_date=trading_date,
+                instrument=instrument,
+            )
     protocol = _protocol(
         data_dir=data_dir, output_dir=output_dir, locked_dates=dates[-2:]
     )
@@ -51,8 +62,7 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
     assert folds[0]["training_sessions"][0]["trading_date"] == "2024-01-01"
     assert folds[-1]["validation_sessions"][0]["trading_date"] == "2024-01-04"
     assert [
-        item["trading_date"]
-        for item in manifest["final_test_sessions"]["EUR_USD"]
+        item["trading_date"] for item in manifest["final_test_sessions"]["EUR_USD"]
     ] == ["2024-01-05", "2024-01-06"]
 
     baseline = research_protocol.run_baseline_gate(
@@ -185,9 +195,7 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
         .alias("confidence_lower")
     )
     neural_comparisons.write_csv(neural.comparisons_path)
-    neural_gate["neural_signal_by_model_horizon"][
-        "deeplob_direction:d1:h100"
-    ] = True
+    neural_gate["neural_signal_by_model_horizon"]["deeplob_direction:d1:h100"] = True
     neural_gate["accepted_model_depth_horizons"] = [
         {
             "model": "deeplob_direction",
@@ -312,6 +320,92 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
             policy_path=policy_path,
             plan_sha256=cross_plan.plan_sha256,
         )
+
+    temporal_policy_path = tmp_path / "temporal_policy.yaml"
+    temporal_policy_path.write_text(
+        "\n".join(
+            (
+                "schema_version: 1",
+                "evaluation_year: 2023",
+                "instruments: [EUR_USD, USD_JPY, EUR_JPY]",
+                "primary_instrument: EUR_USD",
+                "minimum_common_eligible_sessions: 2",
+                "session_selection: all_common_technically_eligible_dates",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    temporal_policy = research_protocol.load_temporal_policy(path=temporal_policy_path)
+    temporal_audit = research_protocol.run_temporal_audit(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        temporal_policy=temporal_policy,
+        temporal_policy_path=temporal_policy_path,
+    )
+    temporal_audit_data = pl.read_csv(temporal_audit.audit_path)
+    assert temporal_audit_data.height == 6
+    assert temporal_audit_data["outcomes_redacted"].all()
+    resumed_temporal_audit = research_protocol.run_temporal_audit(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        temporal_policy=temporal_policy,
+        temporal_policy_path=temporal_policy_path,
+    )
+    assert pl.read_csv(resumed_temporal_audit.audit_path).height == 6
+    temporal_plan = research_protocol.freeze_temporal_evaluation_plan(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        neural_policy_path=policy_path,
+        temporal_policy=temporal_policy,
+        temporal_policy_path=temporal_policy_path,
+    )
+    frozen_temporal = json.loads(temporal_plan.plan_path.read_text(encoding="utf-8"))
+    assert frozen_temporal["temporal_outcomes_inspected"] is False
+    assert frozen_temporal["neural_retraining_permitted"] is False
+    assert len(frozen_temporal["cells"]) == 6
+    with pytest.raises(research_protocol.TemporalEvaluationPausedError):
+        research_protocol.run_temporal_evaluation(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            neural_policy=policy,
+            neural_policy_path=policy_path,
+            temporal_policy=temporal_policy,
+            temporal_policy_path=temporal_policy_path,
+            plan_sha256=temporal_plan.plan_sha256,
+            maximum_new_sessions=1,
+        )
+    temporal = research_protocol.run_temporal_evaluation(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        neural_policy=policy,
+        neural_policy_path=policy_path,
+        temporal_policy=temporal_policy,
+        temporal_policy_path=temporal_policy_path,
+        plan_sha256=temporal_plan.plan_sha256,
+    )
+    temporal_metrics = pl.read_csv(temporal.metrics_path)
+    assert temporal_metrics.height == 18
+    assert set(temporal_metrics["instrument"]) == {
+        "EUR_USD",
+        "EUR_JPY",
+        "USD_JPY",
+    }
+    temporal_decision = json.loads(temporal.decision_path.read_text(encoding="utf-8"))
+    assert temporal_decision["temporal_outcomes_used"] is True
+    assert temporal_decision["neural_retraining_used"] is False
+    assert temporal_decision["retuning_permitted"] is False
+    assert not (temporal.output_dir / "progress_summary.json").exists()
+    with pytest.raises(ValueError, match="complete"):
+        research_protocol.run_temporal_evaluation(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            neural_policy=policy,
+            neural_policy_path=policy_path,
+            temporal_policy=temporal_policy,
+            temporal_policy_path=temporal_policy_path,
+            plan_sha256=temporal_plan.plan_sha256,
+        )
     assert decision["locked_evaluation_used"] is True
     assert decision["retuning_permitted"] is False
     with pytest.raises(ValueError, match="already complete"):
@@ -382,9 +476,7 @@ def _write_session(
 ) -> None:
     year_dir = data_dir / str(trading_date.year)
     year_dir.mkdir(parents=True, exist_ok=True)
-    path = year_dir / (
-        f"{trading_date:%Y%m%d}-EBS_LVL2_{instrument.value}_0.csv.gz"
-    )
+    path = year_dir / (f"{trading_date:%Y%m%d}-EBS_LVL2_{instrument.value}_0.csv.gz")
     mid_offsets = (0, 1, 1, 0, -1, -1)
     base_mid = 1.1 if instrument is orderbook_models.Instrument.EUR_USD else 150.0
     tick = 0.00001 if instrument is orderbook_models.Instrument.EUR_USD else 0.001

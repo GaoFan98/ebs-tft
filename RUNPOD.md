@@ -289,6 +289,58 @@ after an interruption to resume. A completed run is immutable. Its decision comp
 each transferred model with the EUR/USD-trained logistic baseline using paired
 target-session bootstrap intervals for macro F1 and MCC.
 
+## External-year temporal evaluation
+
+The final external-data stage is predeclared in
+`notebooks/research_temporal_evaluation.yaml`. It requires 2023 raw files for
+EUR/USD, USD/JPY, and EUR/JPY under `data/raw/2023/`. The primary temporal claim is
+EUR/USD; results for the other pairs are explicitly treated as combined temporal
+and cross-instrument stress tests. Every technically eligible date common to all
+three instruments is retained, with a minimum of 20 common dates. No date can be
+selected using its target balance or model result.
+
+First run the resumable structural audit. It reconstructs native states and records
+technical eligibility while redacting every target outcome, so it does not require
+a GPU:
+
+```bash
+cd /workspace/ebs-tft
+uv run --no-sync ebs-tft research-temporal-audit \
+  --config notebooks/research_protocol.yaml \
+  --temporal-policy notebooks/research_temporal_evaluation.yaml
+```
+
+After the audit reports at least 20 common eligible dates, freeze the plan:
+
+```bash
+uv run --no-sync ebs-tft research-freeze-temporal-evaluation \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml \
+  --temporal-policy notebooks/research_temporal_evaluation.yaml
+```
+
+Review and save the printed `plan_sha256`, then run the exact plan on a GPU Pod:
+
+```bash
+export TERM=xterm-256color
+tmux new -s ebs-temporal
+cd /workspace/ebs-tft
+set -o pipefail
+time uv run --no-sync ebs-tft research-temporal-evaluation \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml \
+  --temporal-policy notebooks/research_temporal_evaluation.yaml \
+  --plan-sha256 PASTE_THE_PRINTED_HASH_HERE \
+  2>&1 | tee notebooks/temporal_evaluation_terminal.log
+```
+
+This stage never trains a neural model. It loads the four final EUR/USD checkpoints,
+fits the frozen logistic reference on the same 40 EUR/USD development sessions, and
+evaluates one external-year instrument session at a time. Each session publishes an
+atomic checkpoint. After interruption, rerun with the same plan hash; optionally use
+`--maximum-new-sessions N` for a deliberately bounded first pass. A completed run is
+immutable and cannot be replaced.
+
 ## Platform references
 
 - [Runpod: connect with VS Code Remote SSH](https://docs.runpod.io/pods/configuration/connect-to-ide)

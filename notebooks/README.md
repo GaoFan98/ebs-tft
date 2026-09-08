@@ -271,6 +271,16 @@ selection, and compares them with a logistic model fitted only on the frozen EUR
 development sessions. Completed cells resume atomically and a completed transfer
 run cannot be replaced.
 
+The 2023 temporal stage is fixed separately in
+`research_temporal_evaluation.yaml`. `research-temporal-audit` uses only structural
+eligibility and redacts all external-year targets while atomically caching each
+session. `research-freeze-temporal-evaluation` then selects every technically
+eligible date common to the three declared instruments and freezes all raw-data,
+cache, evidence, and checkpoint hashes. `research-temporal-evaluation` reuses the
+four final checkpoints without neural training, processes one session at a time,
+and is resumable at session boundaries. EUR/USD is the predeclared primary temporal
+test; USD/JPY and EUR/JPY are combined time-plus-instrument stress tests.
+
 ## Outputs and resumption
 
 Multi-session output contains `terminal_summary.txt`, `run_summary.json`, one native

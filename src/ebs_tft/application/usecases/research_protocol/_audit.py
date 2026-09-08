@@ -218,6 +218,8 @@ def _audit_file(
     *,
     raw_data_file: raw_file_repository.RawDataFile,
     protocol: research_models.ResearchProtocol,
+    force_redact_outcomes: bool = False,
+    cache_root: Path | None = None,
 ) -> _AuditRecord:
     instrument = orderbook_models.Instrument(raw_data_file.instrument)
     source_sha256 = raw_file_repository.get_content_fingerprint(
@@ -258,18 +260,26 @@ def _audit_file(
             audit=audit,
             tracker=tracker,
             states=states,
+            force_redact_outcomes=force_redact_outcomes,
         )
-        if (
+        cache_dir: Path | None = None
+        if record.eligible and cache_root is not None:
+            cache_dir = cache_root / identity.instrument.value
+        elif (
             record.eligible
+            and not force_redact_outcomes
             and identity.instrument is protocol.development_instrument
             and identity.trading_date <= protocol.split_policy.development_end_date
             and identity.trading_date
             not in protocol.split_policy.locked_evaluation_dates
         ):
             cache_dir = protocol.output_dir / "native_cache" / identity.instrument.value
+        if cache_dir is not None:
             cache_dir.mkdir(parents=True, exist_ok=True)
             cache_path = cache_dir / f"{identity.trading_date.isoformat()}.parquet"
-            states.write_parquet(cache_path)
+            temporary = cache_path.with_suffix(".parquet.tmp")
+            states.write_parquet(temporary)
+            temporary.replace(cache_path)
             record = attrs.evolve(
                 record,
                 row={
@@ -292,6 +302,7 @@ def _audit_file(
             audit=audit,
             tracker=tracker,
             error=f"{type(exc).__name__}: {exc}",
+            force_redact_outcomes=force_redact_outcomes,
         )
 
 
@@ -303,6 +314,7 @@ def _successful_record(
     audit: ebs_csv.ParseAudit,
     tracker: _RecordTracker,
     states: pl.DataFrame,
+    force_redact_outcomes: bool = False,
 ) -> _AuditRecord:
     if tracker.first_timestamp is None or tracker.latest_timestamp is None:
         raise ValueError("parsed session contains no timestamped records")
@@ -340,7 +352,9 @@ def _successful_record(
         parse_error=None,
         policy=protocol.audit_policy,
     )
-    locked = identity.trading_date in protocol.split_policy.locked_evaluation_dates
+    locked = force_redact_outcomes or (
+        identity.trading_date in protocol.split_policy.locked_evaluation_dates
+    )
     redact = locked and protocol.audit_policy.redact_locked_outcomes
     row = _base_row(
         identity=identity,
@@ -388,6 +402,7 @@ def _failed_record(
     audit: ebs_csv.ParseAudit,
     tracker: _RecordTracker,
     error: str,
+    force_redact_outcomes: bool = False,
 ) -> _AuditRecord:
     duration_milliseconds = (
         int(
@@ -403,7 +418,9 @@ def _failed_record(
         parse_error=error,
         policy=protocol.audit_policy,
     )
-    locked = identity.trading_date in protocol.split_policy.locked_evaluation_dates
+    locked = force_redact_outcomes or (
+        identity.trading_date in protocol.split_policy.locked_evaluation_dates
+    )
     row = _base_row(
         identity=identity,
         raw_data_file=raw_data_file,

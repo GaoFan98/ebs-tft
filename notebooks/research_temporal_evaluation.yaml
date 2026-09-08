@@ -1,0 +1,6 @@
+schema_version: 1
+evaluation_year: 2023
+instruments: [EUR_USD, USD_JPY, EUR_JPY]
+primary_instrument: EUR_USD
+minimum_common_eligible_sessions: 20
+session_selection: all_common_technically_eligible_dates

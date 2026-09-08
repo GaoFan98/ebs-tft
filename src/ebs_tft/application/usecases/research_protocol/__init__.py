@@ -49,6 +49,25 @@ from ebs_tft.application.usecases.research_protocol._neural_config import (
     UnableToLoadNeuralBenchmarkPolicyError,
     load_policy,
 )
+from ebs_tft.application.usecases.research_protocol._temporal import (
+    TemporalAuditResult,
+    TemporalEvaluationPausedError,
+    TemporalEvaluationResult,
+    TemporalPlanResult,
+)
+from ebs_tft.application.usecases.research_protocol._temporal import (
+    freeze_plan as freeze_temporal_evaluation_plan,
+)
+from ebs_tft.application.usecases.research_protocol._temporal import (
+    run as run_temporal_evaluation,
+)
+from ebs_tft.application.usecases.research_protocol._temporal import (
+    run_audit as run_temporal_audit,
+)
+from ebs_tft.application.usecases.research_protocol._temporal_config import (
+    UnableToLoadTemporalEvaluationPolicyError,
+    load_temporal_policy,
+)
 from ebs_tft.application.usecases.research_protocol._verification import (
     ModelProtocolVerificationResult,
 )
@@ -70,8 +89,14 @@ __all__ = [
     "LockedEvaluationPausedError",
     "LockedEvaluationPlanResult",
     "LockedEvaluationResult",
+    "TemporalAuditResult",
+    "TemporalEvaluationPausedError",
+    "TemporalEvaluationResult",
+    "TemporalPlanResult",
+    "UnableToLoadTemporalEvaluationPolicyError",
     "load_protocol",
     "load_policy",
+    "load_temporal_policy",
     "run_session_audit",
     "run_baseline_gate",
     "run_model_protocol_verification",
@@ -80,4 +105,7 @@ __all__ = [
     "run_locked_evaluation",
     "freeze_cross_instrument_plan",
     "run_cross_instrument_evaluation",
+    "run_temporal_audit",
+    "freeze_temporal_evaluation_plan",
+    "run_temporal_evaluation",
 ]

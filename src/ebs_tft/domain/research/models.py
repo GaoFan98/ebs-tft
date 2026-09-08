@@ -243,3 +243,32 @@ class NeuralBenchmarkPolicy:
             raise ValueError("weight_decay must be non-negative")
         if self.device not in {"cpu", "mps", "cuda"}:
             raise ValueError("benchmark device must be cpu, mps, or cuda")
+
+
+@attrs.frozen
+class TemporalEvaluationPolicy:
+    """Predeclare the outcome-blind external-year evaluation sample."""
+
+    evaluation_year: int
+    instruments: tuple[orderbook_models.Instrument, ...]
+    primary_instrument: orderbook_models.Instrument
+    minimum_common_eligible_sessions: int
+    session_selection: str
+
+    def __attrs_post_init__(self) -> None:
+        """Reject policies that permit adaptive temporal sample selection."""
+        if self.evaluation_year <= 0:
+            raise ValueError("evaluation_year must be positive")
+        if not self.instruments or len(set(self.instruments)) != len(self.instruments):
+            raise ValueError("temporal instruments must be non-empty and unique")
+        if self.primary_instrument not in self.instruments:
+            raise ValueError("primary_instrument must be a temporal instrument")
+        if (
+            isinstance(self.minimum_common_eligible_sessions, bool)
+            or self.minimum_common_eligible_sessions < 2
+        ):
+            raise ValueError("minimum_common_eligible_sessions must be at least two")
+        if self.session_selection != "all_common_technically_eligible_dates":
+            raise ValueError(
+                "session_selection must freeze all common technically eligible dates"
+            )
