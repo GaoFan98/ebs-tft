@@ -219,6 +219,40 @@ def research_freeze_locked_evaluation(
     )
 
 
+@app.command("research-depth-extension")
+def research_depth_extension(
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
+    policy: Path = typer.Option(
+        Path("notebooks/research_neural_benchmark.yaml"), "--policy"
+    ),
+    replace_output: bool = typer.Option(
+        False,
+        "--replace-output",
+        help="Delete prior Level-10 extension outputs before training.",
+    ),
+    maximum_new_cells: int | None = typer.Option(
+        None,
+        "--maximum-new-cells",
+        min=1,
+        help="Pause safely after this many newly completed Level-10 cells.",
+    ),
+) -> None:
+    """Compare EUR/USD Level 10 with matched existing Level-1 neural evidence."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_policy = research_protocol.load_policy(path=policy)
+    try:
+        research_protocol.run_depth_extension(
+            protocol=loaded_protocol,
+            protocol_path=config.resolve(),
+            policy=loaded_policy,
+            policy_path=policy.resolve(),
+            replace_output=replace_output,
+            maximum_new_cells=maximum_new_cells,
+        )
+    except research_protocol.DepthExtensionPausedError as exc:
+        typer.echo(str(exc))
+
+
 @app.command("research-locked-evaluation")
 def research_locked_evaluation(
     plan_sha256: str = typer.Option(

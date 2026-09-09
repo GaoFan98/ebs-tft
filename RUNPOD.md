@@ -195,6 +195,59 @@ time uv run --no-sync ebs-tft research-neural-benchmark \
 Stopping a Pod can lose only the unfinished portion of the current epoch. Completed
 cells and the latest completed epoch remain reusable on the volume disk.
 
+## EUR/USD Level-1 versus Level-10 depth extension
+
+This secondary development experiment answers whether deeper order-book levels
+improve the selected 30-second EUR/USD forecasts. It reuses the completed Level-1
+rows from the original 64-cell benchmark and trains only 16 Level-10 cells: four
+rolling folds times two models times two seeds. The raw feed remains on its causal
+100-ms state grid; no one-minute bars or other time aggregation are introduced.
+
+Because the locked outcomes have already been inspected, this is explicitly a
+development-only depth ablation. It must not be described as a new pristine locked
+test. Before starting, verify the full Level-1 evidence is still on the Pod:
+
+```bash
+cd /workspace/ebs-tft
+git pull --ff-only
+bash scripts/runpod/bootstrap.sh
+uv run python scripts/runpod/verify_environment.py
+test -f notebooks/research_protocol_outputs/neural_benchmark/session_metrics.csv
+find notebooks/research_protocol_outputs/neural_benchmark/cells \
+  -name cell_summary.json | wc -l
+```
+
+The final command must print `64`. Then run all 16 new cells inside tmux:
+
+```bash
+export TERM=xterm-256color
+tmux new -s ebs-depth
+cd /workspace/ebs-tft
+set -o pipefail
+time uv run --no-sync ebs-tft research-depth-extension \
+  --config notebooks/research_protocol.yaml \
+  --policy notebooks/research_neural_benchmark.yaml \
+  2>&1 | tee notebooks/depth_extension_terminal.log
+```
+
+Detach with `Ctrl-b`, then `d`; reattach with
+`tmux attach -t ebs-depth`. If the Pod or process is interrupted, rerun the same
+command without `--replace-output`; completed cells and the latest epoch resume
+safely. `--maximum-new-cells N` is available for a bounded run, but is unnecessary
+for an unattended full run. Never add `--replace-output` when resuming.
+
+At completion, inspect the direct Level-10-minus-Level-1 decision and copy the
+colleague-ready workbook:
+
+```bash
+cat notebooks/research_protocol_outputs/depth_extension/decision.json
+ls -lh notebooks/research_protocol_outputs/depth_extension/eurusd_level1_vs_level10.xlsx
+```
+
+The workbook includes the experimental design and data counts, absolute scores for
+both depths, paired 95% session-bootstrap intervals, per-session deltas, stability,
+training/runtime details, raw session metrics, and interpretation notes.
+
 ## Frozen locked evaluation
 
 After the neural benchmark reports `64/64`, do **not** run those cells again. Pull
