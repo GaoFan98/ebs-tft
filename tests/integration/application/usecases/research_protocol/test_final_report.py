@@ -53,9 +53,19 @@ def test_builds_verified_final_report(tmp_path: Path) -> None:
     with zipfile.ZipFile(workbook) as archive:
         workbook_xml = archive.read("xl/workbook.xml").decode()
     assert "Executive Summary" in workbook_xml
+    assert "Model Summary" in workbook_xml
+    assert "Data Usage" in workbook_xml
+    assert "Class Balance" in workbook_xml
+    assert "Confusion Matrices" in workbook_xml
+    assert "Training Details" in workbook_xml
     assert "EURUSD Raw Sessions" in workbook_xml
     assert "Transfer Raw Sessions" in workbook_xml
     assert (output / "primary_evidence.csv").is_file()
+    assert (output / "model_performance_summary.csv").is_file()
+    assert (output / "data_usage.csv").is_file()
+    assert (output / "class_balance.csv").is_file()
+    assert (output / "confusion_matrices.csv").is_file()
+    assert (output / "training_details.csv").is_file()
     assert (output / "confirmatory_primary_effects.svg").is_file()
     summary = json.loads((output / "study_summary.json").read_text())
     assert summary["study_year"] == 2024
@@ -138,7 +148,32 @@ def _write_evidence(*, root: Path, protocol_path: Path) -> None:
             "final_test_sessions": [{"trading_date": date} for date in dates],
         },
     )
-    _write_json(cross / "plan.json", {"stage": "cross"})
+    _write_json(
+        cross / "plan.json",
+        {
+            "stage": "cross",
+            "target_sessions": {
+                instrument: [{"trading_date": date} for date in dates]
+                for instrument in ("EUR_JPY", "USD_JPY")
+            },
+        },
+    )
+    for model, parameter_count in (
+        ("deeplob_direction", 15_860),
+        ("tft_direction", 52_581),
+    ):
+        for seed, fixed_epochs in ((7, 3), (19, 4)):
+            cell = locked / "cells" / "h30000" / "depth_1" / model / f"seed_{seed}"
+            cell.mkdir(parents=True)
+            _write_json(
+                cell / "cell_summary.json",
+                {
+                    "fixed_epochs": fixed_epochs,
+                    "parameter_count": parameter_count,
+                    "fit_elapsed_seconds": 10.0,
+                    "locked_evaluation_used": True,
+                },
+            )
     _write_json(
         locked / "run_summary.json",
         {
@@ -259,11 +294,26 @@ def _session_metrics(*, instruments: tuple[str, ...]) -> pl.DataFrame:
                             "model": model,
                             "seed": seed,
                             "validation_date": date,
+                            "observations": 1_000 + date_index,
+                            "parameter_count": {
+                                "logistic": 0,
+                                "deeplob_direction": 15_860,
+                                "tft_direction": 52_581,
+                            }[model],
                             "balanced_accuracy": base,
                             "macro_f1": base,
                             "mcc": base - 0.2,
                             "log_loss": 1.0 - base,
                             "multiclass_brier": 0.7 - base,
+                            "confusion_down_down": 150,
+                            "confusion_down_flat": 100,
+                            "confusion_down_up": 50,
+                            "confusion_flat_down": 90,
+                            "confusion_flat_flat": 250,
+                            "confusion_flat_up": 60,
+                            "confusion_up_down": 40,
+                            "confusion_up_flat": 110,
+                            "confusion_up_up": 150 + date_index,
                         }
                     )
     return pl.DataFrame(rows)

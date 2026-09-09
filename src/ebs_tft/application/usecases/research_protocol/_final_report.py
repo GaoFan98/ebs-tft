@@ -67,6 +67,7 @@ def run(
     locked_decision = _json_mapping(paths["locked_decision"])
     cross_decision = _json_mapping(paths["cross_decision"])
     locked_plan = _json_mapping(paths["locked_plan"])
+    cross_plan = _json_mapping(paths["cross_plan"])
     neural_summary = _json_mapping(paths["neural_summary"])
     locked_summary = _json_mapping(paths["locked_summary"])
     cross_summary = _json_mapping(paths["cross_summary"])
@@ -111,6 +112,28 @@ def run(
             _session_deltas(data=cross_metrics, stage="cross_instrument"),
         ]
     ).sort(["stage", "instrument", "model", "validation_date"])
+    model_summary = _model_summary(
+        absolute_metrics=absolute_metrics,
+        comparisons=pl.concat([locked, cross]),
+        locked_metrics=locked_metrics,
+        cross_metrics=cross_metrics,
+    )
+    data_usage = _data_usage(
+        locked_plan=locked_plan,
+        cross_plan=cross_plan,
+        locked_metrics=locked_metrics,
+        cross_metrics=cross_metrics,
+        development_validation_sessions=_single_integer(
+            neural_comparisons, column="sessions"
+        ),
+    )
+    class_balance = _class_balance(
+        metrics=pl.concat([locked_metrics, cross_metrics], how="diagonal_relaxed")
+    )
+    confusion_matrices = _confusion_matrices(
+        metrics=pl.concat([locked_metrics, cross_metrics], how="diagonal_relaxed")
+    )
+    training_details = _training_details(paths=paths, metrics=locked_metrics)
 
     development.write_csv(output_dir / "development_comparisons.csv")
     locked.write_csv(output_dir / "locked_comparisons.csv")
@@ -118,6 +141,11 @@ def run(
     primary_evidence.write_csv(output_dir / "primary_evidence.csv")
     absolute_metrics.write_csv(output_dir / "absolute_metric_summary.csv")
     session_deltas.write_csv(output_dir / "session_primary_deltas.csv")
+    model_summary.write_csv(output_dir / "model_performance_summary.csv")
+    data_usage.write_csv(output_dir / "data_usage.csv")
+    class_balance.write_csv(output_dir / "class_balance.csv")
+    confusion_matrices.write_csv(output_dir / "confusion_matrices.csv")
+    training_details.write_csv(output_dir / "training_details.csv")
     (output_dir / "development_primary_effects.svg").write_text(
         _forest_svg(
             evidence=primary_evidence.filter(pl.col("stage") == "development"),
@@ -178,6 +206,11 @@ def run(
         locked=locked,
         cross=cross,
         absolute_metrics=absolute_metrics,
+        model_summary=model_summary,
+        data_usage=data_usage,
+        class_balance=class_balance,
+        confusion_matrices=confusion_matrices,
+        training_details=training_details,
         session_deltas=session_deltas,
         locked_metrics=locked_metrics,
         cross_metrics=cross_metrics,
@@ -222,7 +255,7 @@ def _required_paths(*, source_root: Path) -> dict[str, Path]:
     neural = source_root / "neural_benchmark"
     locked = source_root / "locked_evaluation"
     cross = source_root / "cross_instrument_evaluation"
-    return {
+    paths = {
         "protocol": Path(),  # Replaced with the explicit protocol path below.
         "neural_summary": neural / "run_summary.json",
         "neural_decision": neural / "gate_decision.json",
@@ -238,6 +271,18 @@ def _required_paths(*, source_root: Path) -> dict[str, Path]:
         "cross_comparisons": cross / "paired_baseline_comparisons.csv",
         "cross_metrics": cross / "session_metrics.csv",
     }
+    for model in ("deeplob_direction", "tft_direction"):
+        for seed in (7, 19):
+            paths[f"locked_cell_{model}_seed_{seed}"] = (
+                locked
+                / "cells"
+                / "h30000"
+                / "depth_1"
+                / model
+                / f"seed_{seed}"
+                / "cell_summary.json"
+            )
+    return paths
 
 
 def _require_files(*, paths: dict[str, Path]) -> None:
@@ -449,6 +494,263 @@ def _session_deltas(*, data: pl.DataFrame, stage: str) -> pl.DataFrame:
     )
 
 
+def _model_summary(
+    *,
+    absolute_metrics: pl.DataFrame,
+    comparisons: pl.DataFrame,
+    locked_metrics: pl.DataFrame,
+    cross_metrics: pl.DataFrame,
+) -> pl.DataFrame:
+    absolute = {
+        (
+            str(row["stage"]),
+            str(row["instrument"]),
+            str(row["model"]),
+            str(row["metric"]),
+        ): float(row["mean"])
+        for row in absolute_metrics.iter_rows(named=True)
+    }
+    comparison = {
+        (
+            str(row["stage"]),
+            str(row["instrument"]),
+            str(row["model"]),
+            str(row["metric"]),
+        ): row
+        for row in comparisons.iter_rows(named=True)
+    }
+    all_metrics = pl.concat([locked_metrics, cross_metrics], how="diagonal_relaxed")
+    observations = {
+        str(row["instrument"]): int(row["observations"])
+        for row in (
+            all_metrics.filter(pl.col("model") == "logistic")
+            .group_by("instrument")
+            .agg(pl.col("observations").sum())
+            .iter_rows(named=True)
+        )
+    }
+    parameters = {
+        str(row["model"]): int(row["parameter_count"])
+        for row in all_metrics.select("model", "parameter_count")
+        .unique()
+        .iter_rows(named=True)
+    }
+    rows: list[dict[str, object]] = []
+    dimensions = (
+        comparisons.select("stage", "instrument", "model")
+        .unique()
+        .sort("stage", "instrument", "model")
+    )
+    for dimension in dimensions.iter_rows(named=True):
+        stage = str(dimension["stage"])
+        instrument = str(dimension["instrument"])
+        model = str(dimension["model"])
+        macro = comparison[(stage, instrument, model, "macro_f1")]
+        mcc = comparison[(stage, instrument, model, "mcc")]
+        log_loss = comparison[(stage, instrument, model, "log_loss")]
+        rows.append(
+            {
+                "stage": stage,
+                "instrument": instrument,
+                "model": model,
+                "horizon_seconds": int(macro["horizon_milliseconds"]) // 1000,
+                "sessions": int(macro["sessions"]),
+                "evaluation_observations": observations[instrument],
+                "parameter_count": parameters[model],
+                "macro_f1": absolute[(stage, instrument, model, "macro_f1")],
+                "logistic_macro_f1": absolute[
+                    (stage, instrument, "logistic", "macro_f1")
+                ],
+                "macro_f1_delta": float(macro["mean_delta"]),
+                "macro_f1_ci_lower": float(macro["confidence_lower"]),
+                "macro_f1_ci_upper": float(macro["confidence_upper"]),
+                "mcc": absolute[(stage, instrument, model, "mcc")],
+                "logistic_mcc": absolute[(stage, instrument, "logistic", "mcc")],
+                "mcc_delta": float(mcc["mean_delta"]),
+                "mcc_ci_lower": float(mcc["confidence_lower"]),
+                "mcc_ci_upper": float(mcc["confidence_upper"]),
+                "log_loss": absolute[(stage, instrument, model, "log_loss")],
+                "logistic_log_loss": absolute[
+                    (stage, instrument, "logistic", "log_loss")
+                ],
+                "log_loss_delta": float(log_loss["mean_delta"]),
+                "primary_gate_passed": bool(macro["metric_passed"])
+                and bool(mcc["metric_passed"]),
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def _data_usage(
+    *,
+    locked_plan: dict[str, object],
+    cross_plan: dict[str, object],
+    locked_metrics: pl.DataFrame,
+    cross_metrics: pl.DataFrame,
+    development_validation_sessions: int,
+) -> pl.DataFrame:
+    development_dates = _plan_session_dates(
+        plan=locked_plan, key="development_sessions"
+    )
+    final_dates = _plan_session_dates(plan=locked_plan, key="final_test_sessions")
+    target_sessions = cross_plan.get("target_sessions")
+    if not isinstance(target_sessions, dict):
+        raise ValueError("cross-instrument plan target_sessions must be an object")
+    all_metrics = pl.concat([locked_metrics, cross_metrics], how="diagonal_relaxed")
+    baseline = all_metrics.filter(pl.col("model") == "logistic")
+    rows: list[dict[str, object]] = []
+    for instrument in ("EUR_USD", "USD_JPY", "EUR_JPY"):
+        selected = baseline.filter(pl.col("instrument") == instrument)
+        if selected.height != 4:
+            raise ValueError(f"expected four final sessions for {instrument}")
+        if instrument == "EUR_USD":
+            training_sessions = len(development_dates)
+            rolling_validation = development_validation_sessions
+            evaluation_dates = final_dates
+            training_note = "Neural models and logistic reference trained on EUR/USD"
+        else:
+            training_sessions = 0
+            rolling_validation = 0
+            raw_targets = target_sessions.get(instrument)
+            if not isinstance(raw_targets, list):
+                raise ValueError(f"missing frozen target sessions for {instrument}")
+            evaluation_dates = sorted(
+                str(item["trading_date"])
+                for item in raw_targets
+                if isinstance(item, dict) and isinstance(item.get("trading_date"), str)
+            )
+            if len(evaluation_dates) != 4:
+                raise ValueError(f"expected four frozen target dates for {instrument}")
+            training_note = "Frozen EUR/USD models applied without neural retraining"
+        rows.append(
+            {
+                "instrument": instrument,
+                "neural_training_sessions": training_sessions,
+                "rolling_development_validation_sessions": rolling_validation,
+                "final_evaluation_sessions": len(evaluation_dates),
+                "final_evaluation_dates": ", ".join(evaluation_dates),
+                "unique_final_observations": int(selected["observations"].sum()),
+                "minimum_observations_per_session": int(
+                    _finite_number(selected["observations"].min())
+                ),
+                "maximum_observations_per_session": int(
+                    _finite_number(selected["observations"].max())
+                ),
+                "observation_interval_milliseconds": 100,
+                "note": training_note,
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def _class_balance(*, metrics: pl.DataFrame) -> pl.DataFrame:
+    baseline = metrics.filter(pl.col("model") == "logistic")
+    rows: list[dict[str, object]] = []
+    for instrument in sorted(baseline["instrument"].unique().to_list()):
+        selected = baseline.filter(pl.col("instrument") == instrument)
+        down = int(
+            selected.select(
+                pl.sum_horizontal(
+                    "confusion_down_down",
+                    "confusion_down_flat",
+                    "confusion_down_up",
+                ).sum()
+            ).item()
+        )
+        flat = int(
+            selected.select(
+                pl.sum_horizontal(
+                    "confusion_flat_down",
+                    "confusion_flat_flat",
+                    "confusion_flat_up",
+                ).sum()
+            ).item()
+        )
+        up = int(
+            selected.select(
+                pl.sum_horizontal(
+                    "confusion_up_down", "confusion_up_flat", "confusion_up_up"
+                ).sum()
+            ).item()
+        )
+        total = down + flat + up
+        rows.append(
+            {
+                "instrument": instrument,
+                "observations": total,
+                "down_count": down,
+                "down_percent": down / total,
+                "flat_count": flat,
+                "flat_percent": flat / total,
+                "up_count": up,
+                "up_percent": up / total,
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def _confusion_matrices(*, metrics: pl.DataFrame) -> pl.DataFrame:
+    classes = ("down", "flat", "up")
+    rows: list[dict[str, object]] = []
+    dimensions = (
+        metrics.select("instrument", "model").unique().sort("instrument", "model")
+    )
+    for dimension in dimensions.iter_rows(named=True):
+        selected = metrics.filter(
+            (pl.col("instrument") == dimension["instrument"])
+            & (pl.col("model") == dimension["model"])
+        )
+        seeds = int(selected["seed"].n_unique())
+        for true_class in classes:
+            counts = [
+                float(selected[f"confusion_{true_class}_{predicted}"].sum()) / seeds
+                for predicted in classes
+            ]
+            total = sum(counts)
+            rows.append(
+                {
+                    **dimension,
+                    "true_class": true_class,
+                    "predicted_down_count": counts[0],
+                    "predicted_flat_count": counts[1],
+                    "predicted_up_count": counts[2],
+                    "true_class_count": total,
+                    "predicted_down_percent": counts[0] / total,
+                    "predicted_flat_percent": counts[1] / total,
+                    "predicted_up_percent": counts[2] / total,
+                }
+            )
+    return pl.DataFrame(rows)
+
+
+def _training_details(*, paths: dict[str, Path], metrics: pl.DataFrame) -> pl.DataFrame:
+    parameters = {
+        str(row["model"]): int(row["parameter_count"])
+        for row in metrics.select("model", "parameter_count")
+        .unique()
+        .iter_rows(named=True)
+    }
+    rows: list[dict[str, object]] = []
+    for model in ("deeplob_direction", "tft_direction"):
+        for seed in (7, 19):
+            summary = _json_mapping(paths[f"locked_cell_{model}_seed_{seed}"])
+            rows.append(
+                {
+                    "model": model,
+                    "seed": seed,
+                    "horizon_seconds": 30,
+                    "depth": 1,
+                    "fixed_epochs": _integer(summary, "fixed_epochs"),
+                    "parameter_count": parameters[model],
+                    "fit_elapsed_seconds": _finite_number(
+                        summary.get("fit_elapsed_seconds")
+                    ),
+                    "locked_evaluation_used": summary.get("locked_evaluation_used"),
+                }
+            )
+    return pl.DataFrame(rows)
+
+
 def _forest_svg(*, evidence: pl.DataFrame, title: str) -> str:
     rows = list(evidence.iter_rows(named=True))
     width = 1100
@@ -515,6 +817,11 @@ def _write_workbook(
     locked: pl.DataFrame,
     cross: pl.DataFrame,
     absolute_metrics: pl.DataFrame,
+    model_summary: pl.DataFrame,
+    data_usage: pl.DataFrame,
+    class_balance: pl.DataFrame,
+    confusion_matrices: pl.DataFrame,
+    training_details: pl.DataFrame,
     session_deltas: pl.DataFrame,
     locked_metrics: pl.DataFrame,
     cross_metrics: pl.DataFrame,
@@ -523,9 +830,6 @@ def _write_workbook(
     development_primary = development.filter(pl.col("metric").is_in(_PRIMARY_METRICS))
     locked_primary = locked.filter(pl.col("metric").is_in(_PRIMARY_METRICS))
     cross_primary = cross.filter(pl.col("metric").is_in(_PRIMARY_METRICS))
-    absolute_primary = absolute_metrics.filter(
-        pl.col("metric").is_in((*_PRIMARY_METRICS, "log_loss"))
-    )
     stability = (
         session_deltas.group_by("stage", "instrument", "model")
         .agg(
@@ -553,6 +857,43 @@ def _write_workbook(
         formats=formats,
         summary=summary,
         dates=dates,
+        model_summary=model_summary,
+        data_usage=data_usage,
+    )
+    model_sheet = _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Model Summary",
+        data=model_summary,
+    )
+    _add_model_charts(
+        workbook=workbook,
+        sheet=model_sheet,
+        data=model_summary,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Data Usage",
+        data=data_usage,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Class Balance",
+        data=class_balance,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Confusion Matrices",
+        data=confusion_matrices,
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Training Details",
+        data=training_details,
     )
     _write_frame_sheet(
         workbook=workbook,
@@ -564,7 +905,7 @@ def _write_workbook(
         workbook=workbook,
         formats=formats,
         name="Absolute Metrics",
-        data=absolute_primary,
+        data=absolute_metrics,
     )
     _write_frame_sheet(
         workbook=workbook,
@@ -619,6 +960,9 @@ def _workbook_formats(
         "title": workbook.add_format(
             {"bold": True, "font_size": 18, "font_color": "#17365D"}
         ),
+        "subtitle": workbook.add_format(
+            {"bold": True, "font_size": 11, "font_color": "#404040"}
+        ),
         "section": workbook.add_format(
             {
                 "bold": True,
@@ -638,9 +982,17 @@ def _workbook_formats(
         ),
         "text": workbook.add_format({"text_wrap": True, "valign": "top"}),
         "number": workbook.add_format({"num_format": "0.000000"}),
+        "percent": workbook.add_format({"num_format": "0.00%"}),
         "integer": workbook.add_format({"num_format": "0"}),
-        "pass": workbook.add_format({"bg_color": "#C6EFCE", "font_color": "#006100"}),
-        "fail": workbook.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006"}),
+        "pass": workbook.add_format(
+            {"bold": True, "bg_color": "#C6EFCE", "font_color": "#006100"}
+        ),
+        "fail": workbook.add_format(
+            {"bold": True, "bg_color": "#FFC7CE", "font_color": "#9C0006"}
+        ),
+        "warning": workbook.add_format(
+            {"text_wrap": True, "bg_color": "#FFF2CC", "font_color": "#7F6000"}
+        ),
     }
 
 
@@ -650,16 +1002,28 @@ def _write_summary_sheet(
     formats: dict[str, xlsxwriter.format.Format],
     summary: dict[str, object],
     dates: list[str],
+    model_summary: pl.DataFrame,
+    data_usage: pl.DataFrame,
 ) -> None:
     sheet = workbook.add_worksheet("Executive Summary")
     sheet.hide_gridlines(2)
-    sheet.set_column("A:A", 27)
-    sheet.set_column("B:B", 95)
-    sheet.merge_range("A1:B1", "EBS TFT — Q1 2024 Evidence Report", formats["title"])
+    sheet.set_tab_color("#1F4E78")
+    sheet.set_column("A:A", 22)
+    sheet.set_column("B:B", 20)
+    sheet.set_column("C:E", 15)
+    sheet.set_column("F:F", 18)
+    sheet.set_column("G:N", 14)
+    sheet.merge_range("A1:N1", "EBS TFT — Q1 2024 Model Evidence", formats["title"])
+    sheet.merge_range(
+        "A2:N2",
+        "Frozen direction-classification evaluation; all comparisons are against "
+        "the same-data logistic reference.",
+        formats["subtitle"],
+    )
     rows = [
-        ("Simple conclusion", summary["headline_conclusion"]),
+        ("Conclusion", summary["headline_conclusion"]),
         (
-            "Is it good?",
+            "Interpretation",
             "Promising research evidence at 30 seconds, but not enough to claim a "
             "production-ready or profitable trading system.",
         ),
@@ -673,7 +1037,7 @@ def _write_summary_sheet(
         ),
         ("Development training sessions", summary["development_training_sessions"]),
         ("Rolling validation sessions", summary["development_sessions"]),
-        ("Locked final sessions", ", ".join(dates)),
+        ("Locked final dates", ", ".join(dates)),
         ("Neural benchmark cells", summary["neural_benchmark_cells"]),
         ("Confirmed EUR/USD candidates", summary["locked_confirmed_candidates"]),
         ("Confirmed transfers", summary["confirmed_cross_instrument_transfers"]),
@@ -683,12 +1047,113 @@ def _write_summary_sheet(
             "Not run; no external-year data is currently available.",
         ),
     ]
-    sheet.write_row(2, 0, ("Item", "Result"), formats["header"])
-    for row_index, (label, value) in enumerate(rows, start=3):
+    sheet.write_row(3, 0, ("Study scope", "Value"), formats["header"])
+    sheet.merge_range(3, 1, 3, 13, "Value", formats["header"])
+    for row_index, (label, value) in enumerate(rows, start=4):
         sheet.write(row_index, 0, label)
-        sheet.write(row_index, 1, value, formats["text"])
-    sheet.set_row(3, 44)
-    sheet.freeze_panes(3, 0)
+        sheet.merge_range(row_index, 1, row_index, 13, value, formats["text"])
+    sheet.set_row(4, 44)
+
+    table_row = 18
+    headers = (
+        "Stage",
+        "Instrument",
+        "Model",
+        "Sessions",
+        "Observations",
+        "Macro F1",
+        "Logistic F1",
+        "F1 delta",
+        "F1 95% CI",
+        "MCC",
+        "Logistic MCC",
+        "MCC delta",
+        "MCC 95% CI",
+        "Decision",
+    )
+    sheet.merge_range(
+        table_row - 1,
+        0,
+        table_row - 1,
+        len(headers) - 1,
+        "Final model tests — absolute scores and paired statistical comparison",
+        formats["section"],
+    )
+    sheet.write_row(table_row, 0, headers, formats["header"])
+    for offset, row in enumerate(model_summary.iter_rows(named=True), start=1):
+        values = (
+            _display_stage(str(row["stage"])),
+            str(row["instrument"]).replace("_", "/"),
+            _display_model(str(row["model"])),
+            row["sessions"],
+            row["evaluation_observations"],
+            row["macro_f1"],
+            row["logistic_macro_f1"],
+            row["macro_f1_delta"],
+            _interval(row["macro_f1_ci_lower"], row["macro_f1_ci_upper"]),
+            row["mcc"],
+            row["logistic_mcc"],
+            row["mcc_delta"],
+            _interval(row["mcc_ci_lower"], row["mcc_ci_upper"]),
+            "PASS" if row["primary_gate_passed"] else "FAIL",
+        )
+        for column_index, value in enumerate(values):
+            cell_format = None
+            if column_index in {3, 4}:
+                cell_format = formats["integer"]
+            elif column_index in {5, 6, 7, 9, 10, 11}:
+                cell_format = formats["number"]
+            elif column_index == 13:
+                cell_format = (
+                    formats["pass"] if row["primary_gate_passed"] else formats["fail"]
+                )
+            sheet.write(table_row + offset, column_index, value, cell_format)
+
+    note_row = table_row + model_summary.height + 2
+    sheet.merge_range(
+        note_row,
+        0,
+        note_row,
+        13,
+        "Statistical unit warning: observations are overlapping 100-ms windows. "
+        "The confidence intervals resample sessions, so the confirmatory sample "
+        "size is four sessions per instrument—not millions of independent cases.",
+        formats["warning"],
+    )
+    sheet.set_row(note_row, 34)
+    usage_row = note_row + 2
+    sheet.merge_range(
+        usage_row,
+        0,
+        usage_row,
+        13,
+        "Data actually used in final evaluation",
+        formats["section"],
+    )
+    usage_headers = (
+        "Instrument",
+        "Training sessions",
+        "Rolling validation sessions",
+        "Final sessions",
+        "Final observations",
+        "Minimum/session",
+        "Maximum/session",
+        "Final dates",
+    )
+    sheet.write_row(usage_row + 1, 0, usage_headers, formats["header"])
+    for offset, row in enumerate(data_usage.iter_rows(named=True), start=2):
+        usage_values = (
+            str(row["instrument"]).replace("_", "/"),
+            row["neural_training_sessions"],
+            row["rolling_development_validation_sessions"],
+            row["final_evaluation_sessions"],
+            row["unique_final_observations"],
+            row["minimum_observations_per_session"],
+            row["maximum_observations_per_session"],
+            row["final_evaluation_dates"],
+        )
+        sheet.write_row(usage_row + offset, 0, usage_values)
+    sheet.freeze_panes(table_row + 1, 0)
 
 
 def _write_frame_sheet(
@@ -697,7 +1162,7 @@ def _write_frame_sheet(
     formats: dict[str, xlsxwriter.format.Format],
     name: str,
     data: pl.DataFrame,
-) -> None:
+) -> xlsxwriter.worksheet.Worksheet:
     sheet = workbook.add_worksheet(name)
     sheet.freeze_panes(1, 0)
     sheet.autofilter(0, 0, data.height, len(data.columns) - 1)
@@ -713,10 +1178,74 @@ def _write_frame_sheet(
             if isinstance(value, bool):
                 cell_format = formats["pass"] if value else formats["fail"]
             elif isinstance(value, float):
-                cell_format = formats["number"]
+                cell_format = (
+                    formats["percent"] if "percent" in column else formats["number"]
+                )
             elif isinstance(value, int):
                 cell_format = formats["integer"]
             sheet.write(row_index, column_index, value, cell_format)
+    return sheet
+
+
+def _add_model_charts(
+    *,
+    workbook: xlsxwriter.Workbook,
+    sheet: xlsxwriter.worksheet.Worksheet,
+    data: pl.DataFrame,
+) -> None:
+    first_row = 1
+    last_row = data.height
+    categories = ["Model Summary", first_row, 2, last_row, 2]
+    for title, neural_column, logistic_column, position in (
+        ("Macro F1: neural versus logistic", 7, 8, "W2"),
+        ("MCC: neural versus logistic", 12, 13, "W20"),
+    ):
+        chart = workbook.add_chart({"type": "column"})
+        chart.add_series(
+            {
+                "name": "Neural model",
+                "categories": categories,
+                "values": [
+                    "Model Summary",
+                    first_row,
+                    neural_column,
+                    last_row,
+                    neural_column,
+                ],
+                "fill": {"color": "#4472C4"},
+            }
+        )
+        chart.add_series(
+            {
+                "name": "Logistic reference",
+                "categories": categories,
+                "values": [
+                    "Model Summary",
+                    first_row,
+                    logistic_column,
+                    last_row,
+                    logistic_column,
+                ],
+                "fill": {"color": "#A5A5A5"},
+            }
+        )
+        chart.set_title({"name": title})
+        chart.set_y_axis({"major_gridlines": {"visible": True}})
+        chart.set_legend({"position": "bottom"})
+        chart.set_size({"width": 720, "height": 330})
+        sheet.insert_chart(position, chart)
+
+
+def _display_stage(stage: str) -> str:
+    return "EUR/USD locked" if stage == "locked_evaluation" else "Frozen transfer"
+
+
+def _display_model(model: str) -> str:
+    return {"deeplob_direction": "DeepLOB", "tft_direction": "TFT"}.get(model, model)
+
+
+def _interval(lower: object, upper: object) -> str:
+    return f"[{float(cast(float, lower)):.6f}, {float(cast(float, upper)):.6f}]"
 
 
 def _write_notes_sheet(
@@ -731,8 +1260,19 @@ def _write_notes_sheet(
     sheet.write_row(0, 0, ("Topic", "Explanation"), formats["header"])
     notes = [
         (
-            "Primary metrics",
-            "Macro F1 and Matthews correlation coefficient (MCC); higher is better.",
+            "Macro F1",
+            "Ranges from 0 to 1; higher is better. It gives down, flat, and up "
+            "equal importance even when their frequencies differ.",
+        ),
+        (
+            "MCC",
+            "Ranges from -1 to 1; higher is better. Zero is roughly no overall "
+            "correlation and one is perfect classification.",
+        ),
+        (
+            "Log loss and Brier",
+            "Probability-quality measures; lower is better. They penalize "
+            "confident incorrect forecasts.",
         ),
         (
             "Delta",
@@ -743,6 +1283,16 @@ def _write_notes_sheet(
             "Confidence interval",
             "Predeclared 95% paired-session bootstrap interval. Sessions, not "
             "overlapping 100 ms observations, are the resampling units.",
+        ),
+        (
+            "Absolute Metrics sheet",
+            "For every final model, instrument, and metric: mean, sample standard "
+            "deviation, minimum, and maximum across the four sessions.",
+        ),
+        (
+            "Confusion matrices",
+            "Rows are true down/flat/up classes and columns are predicted classes. "
+            "Neural counts are averaged across the two frozen random seeds.",
         ),
         (
             "Strict pass rule",
