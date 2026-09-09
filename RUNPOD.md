@@ -202,6 +202,9 @@ improve the selected 30-second EUR/USD forecasts. It reuses the completed Level-
 rows from the original 64-cell benchmark and trains only 16 Level-10 cells: four
 rolling folds times two models times two seeds. The raw feed remains on its causal
 100-ms state grid; no one-minute bars or other time aggregation are introduced.
+The states themselves remain native: the predeclared policy samples training target
+times every 30 seconds for computational control and evaluates validation targets
+every 100 ms. This is target-window subsampling, not price/book aggregation.
 
 Because the locked outcomes have already been inspected, this is explicitly a
 development-only depth ablation. It must not be described as a new pristine locked

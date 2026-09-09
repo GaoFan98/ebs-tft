@@ -701,6 +701,12 @@ def _decision(
         "deeper_depth_supported_by_model": support,
         "supported_models": [model for model, passed in support.items() if passed],
         "native_state_interval_milliseconds": protocol.state_interval_milliseconds,
+        "training_target_stride_milliseconds": dict(
+            protocol.training_stride_milliseconds
+        )[_HORIZON_MILLISECONDS],
+        "evaluation_target_stride_milliseconds": (
+            protocol.evaluation_stride_milliseconds
+        ),
         "minute_aggregation_used": False,
         "development_only": True,
         "locked_evaluation_used": False,
@@ -789,7 +795,9 @@ def _write_workbook(
         ),
         (
             "Raw-data treatment",
-            "Native 100-ms causal states; no 1-minute or other bar aggregation.",
+            "Native 100-ms causal states; no 1-minute or other bar aggregation. "
+            "For computational control, training targets are sampled every 30 "
+            "seconds; validation forecasts are evaluated every 100 ms.",
         ),
         (
             "Data in both variants",
