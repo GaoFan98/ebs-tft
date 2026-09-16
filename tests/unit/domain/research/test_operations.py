@@ -88,6 +88,55 @@ class TestBuildRollingFolds:
             item.trading_date.day for item in actual[1].validation_sessions
         ) == (7, 8)
 
+    def test_builds_one_fixed_period_fold_without_mixing_calendar_periods(
+        self,
+    ) -> None:
+        sessions = (
+            _dated_identity(trading_date=datetime.date(2023, 12, 28)),
+            _dated_identity(trading_date=datetime.date(2023, 12, 29)),
+            _dated_identity(trading_date=datetime.date(2024, 1, 2)),
+            _dated_identity(trading_date=datetime.date(2024, 1, 3)),
+            _dated_identity(trading_date=datetime.date(2024, 3, 6)),
+        )
+        policy = models.FixedPeriodSplitPolicy(
+            training_end_date=datetime.date(2023, 12, 31),
+            validation_start_date=datetime.date(2024, 1, 1),
+            development_end_date=datetime.date(2024, 2, 29),
+            minimum_training_sessions=2,
+            minimum_validation_sessions=2,
+            locked_evaluation_dates=(datetime.date(2024, 3, 6),),
+        )
+
+        actual = operations.build_rolling_folds(sessions=sessions, policy=policy)
+
+        assert len(actual) == 1
+        assert tuple(item.trading_date for item in actual[0].training_sessions) == (
+            datetime.date(2023, 12, 28),
+            datetime.date(2023, 12, 29),
+        )
+        assert tuple(item.trading_date for item in actual[0].validation_sessions) == (
+            datetime.date(2024, 1, 2),
+            datetime.date(2024, 1, 3),
+        )
+
+    def test_rejects_a_fixed_period_below_its_session_minimum(self) -> None:
+        sessions = (
+            _dated_identity(trading_date=datetime.date(2023, 12, 29)),
+            _dated_identity(trading_date=datetime.date(2024, 1, 2)),
+            _dated_identity(trading_date=datetime.date(2024, 1, 3)),
+        )
+        policy = models.FixedPeriodSplitPolicy(
+            training_end_date=datetime.date(2023, 12, 31),
+            validation_start_date=datetime.date(2024, 1, 1),
+            development_end_date=datetime.date(2024, 2, 29),
+            minimum_training_sessions=2,
+            minimum_validation_sessions=2,
+            locked_evaluation_dates=(datetime.date(2024, 3, 6),),
+        )
+
+        with pytest.raises(ValueError, match="training-period minimum"):
+            operations.build_rolling_folds(sessions=sessions, policy=policy)
+
 
 class TestPairedSessionInterval:
     def test_returns_a_deterministic_session_block_interval(self) -> None:
@@ -114,4 +163,13 @@ def _identity(*, day: int) -> models.SessionIdentity:
         trading_date=trading_date,
         path=Path(f"{trading_date.isoformat()}.csv.gz"),
         sha256=str(day) * 64,
+    )
+
+
+def _dated_identity(*, trading_date: datetime.date) -> models.SessionIdentity:
+    return models.SessionIdentity(
+        instrument=orderbook_models.Instrument.EUR_USD,
+        trading_date=trading_date,
+        path=Path(f"{trading_date.isoformat()}.csv.gz"),
+        sha256=trading_date.isoformat(),
     )

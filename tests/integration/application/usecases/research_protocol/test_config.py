@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 import pytest
 
 from ebs_tft.application.usecases import research_protocol
+from ebs_tft.domain.research import models as research_models
 
 
 class TestLoadProtocol:
@@ -36,6 +38,17 @@ class TestLoadProtocol:
             match="training strides",
         ):
             research_protocol.load_protocol(path=path)
+
+    def test_loads_a_fixed_period_longitudinal_split(self, tmp_path: Path) -> None:
+        path = tmp_path / "longitudinal.yaml"
+        path.write_text(_fixed_period_yaml(), encoding="utf-8")
+
+        actual = research_protocol.load_protocol(path=path)
+
+        assert isinstance(actual.split_policy, research_models.FixedPeriodSplitPolicy)
+        assert actual.split_policy.training_end_date == datetime.date(2023, 12, 31)
+        assert actual.split_policy.validation_start_date == datetime.date(2024, 1, 1)
+        assert actual.split_policy.development_end_date == datetime.date(2024, 2, 29)
 
 
 def _yaml() -> str:
@@ -75,3 +88,29 @@ supporting_metrics: [balanced_accuracy, log_loss, multiclass_brier]
 bootstrap_repetitions: 1000
 confidence_level: 0.95
 """
+
+
+def _fixed_period_yaml() -> str:
+    return (
+        _yaml()
+        .replace(
+            "schema_version: 1",
+            "schema_version: 2",
+        )
+        .replace(
+            """split_policy:
+  development_end_date: "2024-03-01"
+  minimum_training_sessions: 20
+  validation_sessions_per_fold: 5
+  fold_step_sessions: 5
+  locked_evaluation_dates: ["2024-03-06"]""",
+            """split_policy:
+  strategy: fixed_period
+  training_end_date: "2023-12-31"
+  validation_start_date: "2024-01-01"
+  development_end_date: "2024-02-29"
+  minimum_training_sessions: 100
+  minimum_validation_sessions: 20
+  locked_evaluation_dates: ["2024-03-06"]""",
+        )
+    )

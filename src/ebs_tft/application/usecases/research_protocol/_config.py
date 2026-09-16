@@ -60,7 +60,8 @@ def load_protocol(*, path: Path) -> research_models.ResearchProtocol:
         raise UnableToLoadResearchProtocolError(
             f"configuration keys differ; missing={missing}, extra={extra}"
         )
-    if _integer(data=data, key="schema_version") != 1:
+    schema_version = _integer(data=data, key="schema_version")
+    if schema_version not in {1, 2}:
         raise UnableToLoadResearchProtocolError("unsupported schema_version")
     base_dir = path.resolve().parent
     try:
@@ -91,7 +92,9 @@ def load_protocol(*, path: Path) -> research_models.ResearchProtocol:
                 data=data, key="evaluation_stride_milliseconds"
             ),
             audit_policy=_audit_policy(value=data["audit_policy"]),
-            split_policy=_split_policy(value=data["split_policy"]),
+            split_policy=_split_policy(
+                value=data["split_policy"], schema_version=schema_version
+            ),
             development_instrument=orderbook_models.Instrument(
                 _string(data=data, key="development_instrument")
             ),
@@ -130,7 +133,11 @@ def _audit_policy(*, value: object) -> research_models.AuditPolicy:
     )
 
 
-def _split_policy(*, value: object) -> research_models.SplitPolicy:
+def _split_policy(
+    *, value: object, schema_version: int
+) -> research_models.SplitPolicy | research_models.FixedPeriodSplitPolicy:
+    if schema_version == 2:
+        return _fixed_period_split_policy(value=value)
     expected = {
         "development_end_date",
         "minimum_training_sessions",
@@ -148,6 +155,42 @@ def _split_policy(*, value: object) -> research_models.SplitPolicy:
             data=data, key="validation_sessions_per_fold"
         ),
         fold_step_sessions=_integer(data=data, key="fold_step_sessions"),
+        locked_evaluation_dates=tuple(
+            datetime.date.fromisoformat(item)
+            for item in _string_tuple(data=data, key="locked_evaluation_dates")
+        ),
+    )
+
+
+def _fixed_period_split_policy(
+    *, value: object
+) -> research_models.FixedPeriodSplitPolicy:
+    expected = {
+        "strategy",
+        "training_end_date",
+        "validation_start_date",
+        "development_end_date",
+        "minimum_training_sessions",
+        "minimum_validation_sessions",
+        "locked_evaluation_dates",
+    }
+    data = _nested_mapping(value=value, expected=expected, name="split_policy")
+    if _string(data=data, key="strategy") != "fixed_period":
+        raise ValueError("schema version 2 requires fixed_period split strategy")
+    return research_models.FixedPeriodSplitPolicy(
+        training_end_date=datetime.date.fromisoformat(
+            _string(data=data, key="training_end_date")
+        ),
+        validation_start_date=datetime.date.fromisoformat(
+            _string(data=data, key="validation_start_date")
+        ),
+        development_end_date=datetime.date.fromisoformat(
+            _string(data=data, key="development_end_date")
+        ),
+        minimum_training_sessions=_integer(data=data, key="minimum_training_sessions"),
+        minimum_validation_sessions=_integer(
+            data=data, key="minimum_validation_sessions"
+        ),
         locked_evaluation_dates=tuple(
             datetime.date.fromisoformat(item)
             for item in _string_tuple(data=data, key="locked_evaluation_dates")

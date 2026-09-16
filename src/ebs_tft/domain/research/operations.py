@@ -33,9 +33,11 @@ def evaluate_session_eligibility(
 def build_rolling_folds(
     *,
     sessions: Sequence[models.SessionIdentity],
-    policy: models.SplitPolicy,
+    policy: models.SplitPolicy | models.FixedPeriodSplitPolicy,
 ) -> tuple[models.RollingFold, ...]:
-    """Return deterministic expanding-window folds from eligible development data."""
+    """Return deterministic development folds for the declared split policy."""
+    if isinstance(policy, models.FixedPeriodSplitPolicy):
+        return _build_fixed_period_fold(sessions=sessions, policy=policy)
     locked = frozenset(policy.locked_evaluation_dates)
     eligible = tuple(
         sorted(
@@ -65,6 +67,39 @@ def build_rolling_folds(
     if not folds:
         raise ValueError("eligible sessions cannot form one complete rolling fold")
     return tuple(folds)
+
+
+def _build_fixed_period_fold(
+    *,
+    sessions: Sequence[models.SessionIdentity],
+    policy: models.FixedPeriodSplitPolicy,
+) -> tuple[models.RollingFold, ...]:
+    ordered = tuple(sorted(sessions, key=lambda item: item.trading_date))
+    training = tuple(
+        item for item in ordered if item.trading_date <= policy.training_end_date
+    )
+    validation = tuple(
+        item
+        for item in ordered
+        if policy.validation_start_date
+        <= item.trading_date
+        <= policy.development_end_date
+    )
+    if len(training) < policy.minimum_training_sessions:
+        raise ValueError(
+            "eligible sessions do not meet the fixed training-period minimum"
+        )
+    if len(validation) < policy.minimum_validation_sessions:
+        raise ValueError(
+            "eligible sessions do not meet the fixed validation-period minimum"
+        )
+    return (
+        models.RollingFold(
+            identifier="fold_01",
+            training_sessions=training,
+            validation_sessions=validation,
+        ),
+    )
 
 
 def training_stride_steps(

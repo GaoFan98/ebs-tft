@@ -1,0 +1,47 @@
+schema_version: 2
+data_dir: ../data/raw
+output_dir: research_2023_2024_outputs
+
+# This longitudinal study is intentionally EUR/USD-only. The source normalizer
+# filters rows by symbol without aggregating or resampling them.
+instruments: [EUR_USD]
+years: [2023, 2024]
+state_interval_milliseconds: 100
+forecast_horizons_milliseconds: [30000]
+context_milliseconds: 10000
+maximum_staleness_milliseconds: 60000
+audit_workers: 2
+training_stride_milliseconds:
+  30000: 30000
+evaluation_stride_milliseconds: 100
+
+audit_policy:
+  minimum_duration_milliseconds: 70000
+  minimum_observed_states: 700
+  required_depth: 1
+  redact_locked_outcomes: true
+
+split_policy:
+  strategy: fixed_period
+  training_end_date: "2023-12-31"
+  validation_start_date: "2024-01-01"
+  development_end_date: "2024-02-29"
+  minimum_training_sessions: 100
+  minimum_validation_sessions: 20
+  # These March results were previously inspected. They are a predeclared
+  # retrospective replication set, not pristine untouched evidence.
+  locked_evaluation_dates:
+    - "2024-03-06"
+    - "2024-03-13"
+    - "2024-03-20"
+    - "2024-03-27"
+
+development_instrument: EUR_USD
+depths: [1]
+models: [deeplob_direction, tft_direction]
+random_seeds: [7, 19]
+validation_checks_per_epoch: 4
+primary_metrics: [macro_f1, mcc]
+supporting_metrics: [balanced_accuracy, log_loss, multiclass_brier]
+bootstrap_repetitions: 10000
+confidence_level: 0.95

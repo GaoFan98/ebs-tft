@@ -573,6 +573,29 @@ def _manifest(
         ]
         for instrument in protocol.instruments
     }
+    split_rules: dict[str, object] = {
+        "strategy": "rolling",
+        "development_end_date": (
+            protocol.split_policy.development_end_date.isoformat()
+        ),
+    }
+    if isinstance(protocol.split_policy, research_models.FixedPeriodSplitPolicy):
+        split_rules = {
+            "strategy": "fixed_period",
+            "training_end_date": (protocol.split_policy.training_end_date.isoformat()),
+            "validation_start_date": (
+                protocol.split_policy.validation_start_date.isoformat()
+            ),
+            "development_end_date": (
+                protocol.split_policy.development_end_date.isoformat()
+            ),
+            "minimum_training_sessions": (
+                protocol.split_policy.minimum_training_sessions
+            ),
+            "minimum_validation_sessions": (
+                protocol.split_policy.minimum_validation_sessions
+            ),
+        }
     return {
         "schema_version": 1,
         "protocol_sha256": _sha256_file(path=protocol_path),
@@ -582,6 +605,7 @@ def _manifest(
         "final_test_sessions": final_test,
         "reserved_earlier_locked_dates": reserved_earlier,
         "rules": {
+            "split": split_rules,
             "development_instrument": protocol.development_instrument.value,
             "native_state_interval_milliseconds": protocol.state_interval_milliseconds,
             "forecast_horizons_milliseconds": list(

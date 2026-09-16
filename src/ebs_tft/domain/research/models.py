@@ -71,6 +71,49 @@ class SplitPolicy:
 
 
 @attrs.frozen
+class FixedPeriodSplitPolicy:
+    """Define one fixed training period, validation period, and replication set."""
+
+    training_end_date: datetime.date
+    validation_start_date: datetime.date
+    development_end_date: datetime.date
+    minimum_training_sessions: int
+    minimum_validation_sessions: int
+    locked_evaluation_dates: tuple[datetime.date, ...]
+
+    def __attrs_post_init__(self) -> None:
+        """Reject overlapping, adaptive, or statistically unusable periods."""
+        if not (
+            self.training_end_date
+            < self.validation_start_date
+            <= self.development_end_date
+        ):
+            raise ValueError(
+                "fixed periods must satisfy training_end < validation_start "
+                "<= development_end"
+            )
+        minimums = (
+            self.minimum_training_sessions,
+            self.minimum_validation_sessions,
+        )
+        if any(isinstance(value, bool) or value < 2 for value in minimums):
+            raise ValueError("fixed-period minimum session counts must be at least two")
+        if not self.locked_evaluation_dates:
+            raise ValueError("locked_evaluation_dates must be non-empty")
+        if tuple(sorted(self.locked_evaluation_dates)) != self.locked_evaluation_dates:
+            raise ValueError("locked_evaluation_dates must be chronological")
+        if len(set(self.locked_evaluation_dates)) != len(self.locked_evaluation_dates):
+            raise ValueError("locked_evaluation_dates must be unique")
+        if any(
+            trading_date <= self.development_end_date
+            for trading_date in self.locked_evaluation_dates
+        ):
+            raise ValueError(
+                "fixed-period locked dates must strictly follow development"
+            )
+
+
+@attrs.frozen
 class ResearchProtocol:
     """Configure audit, splitting, sampling, and finite model gates."""
 
@@ -86,7 +129,7 @@ class ResearchProtocol:
     training_stride_milliseconds: tuple[tuple[int, int], ...]
     evaluation_stride_milliseconds: int
     audit_policy: AuditPolicy
-    split_policy: SplitPolicy
+    split_policy: SplitPolicy | FixedPeriodSplitPolicy
     development_instrument: orderbook_models.Instrument
     depths: tuple[int, ...]
     models: tuple[str, ...]

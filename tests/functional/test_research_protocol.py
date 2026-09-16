@@ -7,6 +7,7 @@ import gzip
 import json
 from pathlib import Path
 
+import attrs
 import polars as pl
 import pytest
 import yaml
@@ -14,6 +15,75 @@ import yaml
 from ebs_tft.application.usecases import research_protocol
 from ebs_tft.domain.orderbook import models as orderbook_models
 from ebs_tft.domain.research import models as research_models
+
+
+def test_fixed_period_audit_freezes_2023_training_and_2024_validation(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "raw"
+    output_dir = tmp_path / "outputs"
+    training_dates = (
+        datetime.date(2023, 12, 28),
+        datetime.date(2023, 12, 29),
+    )
+    validation_dates = (
+        datetime.date(2024, 1, 2),
+        datetime.date(2024, 1, 3),
+    )
+    locked_date = datetime.date(2024, 3, 6)
+    for trading_date in (*training_dates, *validation_dates, locked_date):
+        _write_session(
+            data_dir=data_dir,
+            trading_date=trading_date,
+            instrument=orderbook_models.Instrument.EUR_USD,
+        )
+    base = _protocol(
+        data_dir=data_dir,
+        output_dir=output_dir,
+        locked_dates=(locked_date,),
+    )
+    protocol = attrs.evolve(
+        base,
+        instruments=(orderbook_models.Instrument.EUR_USD,),
+        years=(2023, 2024),
+        audit_policy=research_models.AuditPolicy(
+            minimum_duration_milliseconds=1_000,
+            minimum_observed_states=10,
+            required_depth=1,
+            redact_locked_outcomes=True,
+        ),
+        split_policy=research_models.FixedPeriodSplitPolicy(
+            training_end_date=datetime.date(2023, 12, 31),
+            validation_start_date=datetime.date(2024, 1, 1),
+            development_end_date=datetime.date(2024, 2, 29),
+            minimum_training_sessions=2,
+            minimum_validation_sessions=2,
+            locked_evaluation_dates=(locked_date,),
+        ),
+        depths=(1,),
+    )
+    protocol_path = tmp_path / "protocol.yaml"
+    protocol_path.write_text("schema_version: 2\n", encoding="utf-8")
+
+    result = research_protocol.run_session_audit(
+        protocol=protocol,
+        protocol_path=protocol_path,
+    )
+
+    with result.manifest_path.open(encoding="utf-8") as stream:
+        manifest = yaml.safe_load(stream)
+    fold = manifest["development_folds"]["EUR_USD"][0]
+    assert [item["trading_date"] for item in fold["training_sessions"]] == [
+        item.isoformat() for item in training_dates
+    ]
+    assert [item["trading_date"] for item in fold["validation_sessions"]] == [
+        item.isoformat() for item in validation_dates
+    ]
+    assert manifest["rules"]["split"]["strategy"] == "fixed_period"
+    assert [
+        item["trading_date"] for item in manifest["final_test_sessions"]["EUR_USD"]
+    ] == [locked_date.isoformat()]
+    assert len(tuple((output_dir / "native_cache" / "EUR_USD").glob("*.parquet"))) == 4
 
 
 def test_audit_manifest_and_baseline_gate_remain_chronological(
