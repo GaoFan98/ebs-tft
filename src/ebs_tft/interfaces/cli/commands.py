@@ -6,7 +6,8 @@ from pathlib import Path
 
 import typer
 
-from ebs_tft.application.usecases import pilot, research_protocol
+from ebs_tft.application.usecases import data_ingestion, pilot, research_protocol
+from ebs_tft.domain.orderbook import models as orderbook_models
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -95,6 +96,43 @@ def local_multi_session(
     """Run day-aware training and later-session development validation."""
     specification = pilot.load_multi_session_specification(path=config)
     pilot.run_multi_session(specification=specification, replace_output=replace_output)
+
+
+@app.command("normalize-consolidated-ebs")
+def normalize_consolidated_ebs(
+    source_dir: Path = typer.Option(
+        ...,
+        "--source-dir",
+        help="Directory containing one consolidated EBS gzip per trading date.",
+    ),
+    output_dir: Path = typer.Option(
+        ...,
+        "--output-dir",
+        help="Directory for canonical per-instrument gzip files and provenance.",
+    ),
+    year: int = typer.Option(..., "--year", min=1),
+    instrument: str = typer.Option("EUR_USD", "--instrument"),
+    replace_output: bool = typer.Option(
+        False,
+        "--replace-output",
+        help="Replace only canonical outputs for this instrument and year.",
+    ),
+) -> None:
+    """Filter consolidated legacy sources into canonical files without aggregation."""
+    try:
+        parsed_instrument = orderbook_models.Instrument(instrument)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "instrument must be EUR_USD, USD_JPY, or EUR_JPY",
+            param_hint="--instrument",
+        ) from exc
+    data_ingestion.normalize_consolidated_year(
+        source_dir=source_dir.resolve(),
+        output_dir=output_dir.resolve(),
+        year=year,
+        instrument=parsed_instrument,
+        replace_output=replace_output,
+    )
 
 
 @app.command("research-session-audit")

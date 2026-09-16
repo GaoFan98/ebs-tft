@@ -19,6 +19,9 @@ _FILENAME_PATTERN: re.Pattern[str] = re.compile(
     r"^(?P<trading_date>\d{8})-EBS_LVL2_"
     r"(?P<instrument>[A-Z]+_[A-Z]+)_0\.csv\.gz$"
 )
+_CONSOLIDATED_SOURCE_PATTERN: re.Pattern[str] = re.compile(
+    r"^\d{8}-EBS_Level2_0_0_0\.csv\.gz$"
+)
 
 
 class UnableToScanDirectoryError(Exception):
@@ -190,6 +193,8 @@ def _scan_year_dir(
     files: list[RawDataFile] = []
     for path in entries:
         if not path.name.endswith(".csv.gz"):
+            continue
+        if _CONSOLIDATED_SOURCE_PATTERN.fullmatch(path.name):
             continue
         file = _parse_candidate(
             path=path,

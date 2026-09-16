@@ -4,5 +4,16 @@ from ebs_tft.application.usecases.data_ingestion._exporter import (
     UnableToExportPartitionError,
     export_file,
 )
+from ebs_tft.application.usecases.data_ingestion._normalizer import (
+    NormalizationResult,
+    UnableToNormalizeConsolidatedDataError,
+    normalize_consolidated_year,
+)
 
-__all__ = ["UnableToExportPartitionError", "export_file"]
+__all__ = [
+    "NormalizationResult",
+    "UnableToExportPartitionError",
+    "UnableToNormalizeConsolidatedDataError",
+    "export_file",
+    "normalize_consolidated_year",
+]

@@ -70,6 +70,26 @@ class TestFindRawFiles:
                 )
             )
 
+    def test_find_raw_files_ignores_recognized_consolidated_sources(
+        self, tmp_path: Path
+    ) -> None:
+        year_dir = tmp_path / "2023"
+        year_dir.mkdir()
+        consolidated = year_dir / "20230601-EBS_Level2_0_0_0.csv.gz"
+        canonical = year_dir / "20230601-EBS_LVL2_EUR_USD_0.csv.gz"
+        consolidated.write_bytes(b"source")
+        canonical.write_bytes(b"canonical")
+
+        actual = list(
+            raw_file.find_raw_files(
+                data_dir=tmp_path,
+                instruments=("EUR_USD",),
+                years=(2023,),
+            )
+        )
+
+        assert [item.path for item in actual] == [canonical]
+
     def test_find_raw_files_rejects_an_invalid_calendar_date(
         self, tmp_path: Path
     ) -> None:
