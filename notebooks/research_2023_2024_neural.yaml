@@ -1,0 +1,16 @@
+schema_version: 2
+
+# Frozen unchanged from the completed 2024 benchmark. This longitudinal study
+# changes the calendar sample, not the optimization policy.
+maximum_epochs: 30
+early_stopping_patience: 5
+early_stopping_minimum_delta: 0.0001
+gradient_clip_norm: 1.0
+batch_size: 64
+evaluation_batch_size: 16384
+learning_rate: 0.0003
+weight_decay: 0.0001
+hidden_size: 32
+
+# Fail instead of silently falling back to CPU on RunPod.
+device: cuda

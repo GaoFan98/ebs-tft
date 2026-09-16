@@ -8,6 +8,74 @@ future target offsets over that same state table; they do not aggregate the inpu
 The January 3, February 1, and March 1 results already inspected are development
 evidence only. They must not be relabelled as untouched evaluation evidence.
 
+## 2023-to-2024 EUR/USD longitudinal study
+
+The dedicated longitudinal protocol is
+`notebooks/research_2023_2024_protocol.yaml`. It answers a different question
+from the completed 2024 study: whether substantially more historical EUR/USD data
+supports the already selected 30-second Level-1 DeepLOB and TFT candidates.
+
+The calendar boundary is fixed before this run:
+
+- every technically eligible session from June through December 2023 is training;
+- every technically eligible January-February 2024 session is validation;
+- March 6, 13, 20, and 27 are retrospective replication sessions;
+- March is not pristine evidence because its outcomes were inspected previously;
+- inputs remain native 100 ms reconstructed states with a causal 10-second context;
+- the target is the direction 30 seconds ahead;
+- only Level 1 is used because the completed depth extension did not support Level 10.
+
+The 2023 delivery stores all symbols in one gzip per trading date. Normalize only
+EUR/USD into the canonical filename format before audit. This operation filters CSV
+rows by exact symbol and preserves their order and values; it performs no time
+aggregation, resampling, interpolation, or rounding. It is atomic, resumable, and
+verifies both source and normalized SHA-256 fingerprints:
+
+```bash
+uv run ebs-tft normalize-consolidated-ebs \
+  --source-dir data/raw/2023 \
+  --output-dir data/raw/2023 \
+  --year 2023 \
+  --instrument EUR_USD
+```
+
+Do not pass `--replace-output` when resuming. The standalone
+`data/raw/2023/EBS_Level2_20230601.csv` is an exact decompressed duplicate of the
+June 1 gzip and is deliberately ignored.
+
+On RunPod, bootstrap the pinned environment and run the complete non-neural
+preflight inside `tmux`:
+
+```bash
+bash scripts/runpod/bootstrap.sh
+export TERM=xterm-256color
+tmux new -s ebs-longitudinal
+bash scripts/runpod/prepare_2023_2024.sh
+```
+
+The preflight normalizes 2023, verifies CUDA and every configured instrument-year,
+audits all 2023/2024 EUR/USD sessions, freezes the fixed-period manifest, verifies
+both model adapters, and evaluates the defensive baseline. It refuses to replace a
+tree containing neural or locked-evaluation evidence.
+
+Inspect the finite baseline decision before training:
+
+```bash
+cat notebooks/research_2023_2024_outputs/baseline_gate/gate_decision.json
+```
+
+Only if `eligible_for_neural_benchmark` is `true`, launch the resumable GPU stage:
+
+```bash
+tmux new -s ebs-longitudinal-neural
+bash scripts/runpod/run_2023_2024_neural.sh
+```
+
+This study has four cells—not 64: one fixed calendar fold, one 30-second horizon,
+one Level-1 input, two models, and two random seeds. The launcher pauses safely
+after all four new cells by default. Re-run the same command after an interruption;
+never add `--replace-output` when resuming.
+
 ## Environment
 
 Run commands from the repository root. Use only `uv`; do not create or activate a
