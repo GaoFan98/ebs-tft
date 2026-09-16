@@ -68,6 +68,15 @@ class TestNormalizeConsolidatedYear:
         assert resumed.normalized_files == 0
         assert resumed.reused_files == 1
 
+        verified = data_ingestion.verify_normalized_year(
+            output_dir=output_dir,
+            year=2023,
+            instrument=models.Instrument.EUR_USD,
+        )
+
+        assert verified.verified_files == 1
+        assert verified.selected_rows == 2
+
     def test_rejects_an_unverified_existing_output(self, tmp_path: Path) -> None:
         source_dir = tmp_path / "source"
         source_dir.mkdir()
@@ -84,6 +93,34 @@ class TestNormalizeConsolidatedYear:
             data_ingestion.normalize_consolidated_year(
                 source_dir=source_dir,
                 output_dir=source_dir,
+                year=2023,
+                instrument=models.Instrument.EUR_USD,
+            )
+
+    def test_portable_verification_rejects_tampered_output(
+        self, tmp_path: Path
+    ) -> None:
+        source_dir = tmp_path / "source"
+        output_dir = tmp_path / "output"
+        source_dir.mkdir()
+        source = source_dir / "20230601-EBS_Level2_0_0_0.csv.gz"
+        with gzip.open(source, mode="wt", encoding="utf-8") as stream:
+            stream.write("2023/05/31,21:00:00.000,EUR/USD,Q,0,1,1.1,1,1\n")
+        data_ingestion.normalize_consolidated_year(
+            source_dir=source_dir,
+            output_dir=output_dir,
+            year=2023,
+            instrument=models.Instrument.EUR_USD,
+        )
+        output = output_dir / "20230601-EBS_LVL2_EUR_USD_0.csv.gz"
+        output.write_bytes(b"tampered")
+
+        with pytest.raises(
+            data_ingestion.UnableToNormalizeConsolidatedDataError,
+            match="size mismatch",
+        ):
+            data_ingestion.verify_normalized_year(
+                output_dir=output_dir,
                 year=2023,
                 instrument=models.Instrument.EUR_USD,
             )

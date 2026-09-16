@@ -6,14 +6,18 @@ from ebs_tft.application.usecases.data_ingestion._exporter import (
 )
 from ebs_tft.application.usecases.data_ingestion._normalizer import (
     NormalizationResult,
+    NormalizationVerificationResult,
     UnableToNormalizeConsolidatedDataError,
     normalize_consolidated_year,
+    verify_normalized_year,
 )
 
 __all__ = [
     "NormalizationResult",
+    "NormalizationVerificationResult",
     "UnableToExportPartitionError",
     "UnableToNormalizeConsolidatedDataError",
     "export_file",
     "normalize_consolidated_year",
+    "verify_normalized_year",
 ]

@@ -36,6 +36,16 @@ class NormalizationResult:
     reused_files: int
 
 
+@attrs.frozen
+class NormalizationVerificationResult:
+    """Summarize verification of a portable normalized instrument-year."""
+
+    output_dir: Path
+    manifest_path: Path
+    verified_files: int
+    selected_rows: int
+
+
 def normalize_consolidated_year(
     *,
     source_dir: Path,
@@ -161,6 +171,83 @@ def normalize_consolidated_year(
     )
 
 
+def verify_normalized_year(
+    *,
+    output_dir: Path,
+    year: int,
+    instrument: models.Instrument,
+) -> NormalizationVerificationResult:
+    """
+    Verify portable canonical files against their normalization manifest.
+
+    This verification intentionally does not require the much larger consolidated
+    source files. The manifest retains their identities and checksums, while every
+    transferred canonical output is checked for identity, size, and SHA-256.
+
+    :raises UnableToNormalizeConsolidatedDataError: if the manifest or any output
+        is missing, unexpected, or inconsistent
+    """
+    manifest_path = output_dir / f"normalization_{year}_{instrument.value}.json"
+    if not manifest_path.is_file():
+        raise UnableToNormalizeConsolidatedDataError(
+            f"Normalization manifest not found: {manifest_path}"
+        )
+    entries = _load_manifest(
+        path=manifest_path,
+        year=year,
+        instrument=instrument,
+        replace_output=False,
+    )
+    if not entries:
+        raise UnableToNormalizeConsolidatedDataError(
+            "Normalization manifest contains no sessions"
+        )
+
+    expected_outputs: set[str] = set()
+    selected_rows = 0
+    for entry in entries.values():
+        trading_date = _manifest_trading_date(entry=entry, year=year)
+        output_path = _output_path(
+            output_dir=output_dir,
+            trading_date=trading_date,
+            instrument=instrument,
+        )
+        if output_path.name in expected_outputs:
+            raise UnableToNormalizeConsolidatedDataError(
+                f"Normalization manifest duplicates output: {output_path.name}"
+            )
+        expected_outputs.add(output_path.name)
+        selected_rows += _verify_portable_entry(entry=entry, output_path=output_path)
+
+    discovered_outputs = {
+        path.name
+        for path in output_dir.glob(f"????????-EBS_LVL2_{instrument.value}_0.csv.gz")
+        if path.is_file() and path.name[:4] == str(year)
+    }
+    unexpected = sorted(discovered_outputs - expected_outputs)
+    if unexpected:
+        raise UnableToNormalizeConsolidatedDataError(
+            "Canonical outputs are absent from the normalization manifest: "
+            + ", ".join(unexpected)
+        )
+
+    print("EBS normalized output verification completed")
+    print(
+        "WARNING: verification checks provenance and bytes; it does not train models."
+    )
+    print(f"instrument={instrument.value}")
+    print(f"year={year}")
+    print(f"verified_files={len(expected_outputs)}")
+    print(f"selected_rows={selected_rows}")
+    print(f"manifest={manifest_path}")
+    return NormalizationVerificationResult(
+        output_dir=output_dir,
+        manifest_path=manifest_path,
+        verified_files=len(expected_outputs),
+        selected_rows=selected_rows,
+    )
+
+
 def _load_manifest(
     *,
     path: Path,
@@ -186,6 +273,7 @@ def _load_manifest(
         or loaded.get("instrument") != instrument.value
         or loaded.get("filter_symbol") != instrument.to_symbol()
         or loaded.get("aggregation_used") is not False
+        or loaded.get("transformation") != "symbol_filter_only"
     ):
         raise UnableToNormalizeConsolidatedDataError(
             "Normalization manifest identity does not match this run"
@@ -209,6 +297,70 @@ def _load_manifest(
             )
         entries[source_filename] = entry
     return entries
+
+
+def _manifest_trading_date(*, entry: dict[str, object], year: int) -> datetime.date:
+    raw_date = entry.get("trading_date")
+    if not isinstance(raw_date, str):
+        raise UnableToNormalizeConsolidatedDataError(
+            "Normalization manifest has an invalid trading date"
+        )
+    try:
+        trading_date = datetime.date.fromisoformat(raw_date)
+    except ValueError as exc:
+        raise UnableToNormalizeConsolidatedDataError(
+            "Normalization manifest has an invalid trading date"
+        ) from exc
+    if trading_date.year != year:
+        raise UnableToNormalizeConsolidatedDataError(
+            "Normalization manifest trading date is outside its year"
+        )
+    return trading_date
+
+
+def _verify_portable_entry(*, entry: dict[str, object], output_path: Path) -> int:
+    if entry.get("output_filename") != output_path.name or not output_path.is_file():
+        raise UnableToNormalizeConsolidatedDataError(
+            f"Normalized checkpoint is incomplete: {output_path}"
+        )
+    expected_size = entry.get("output_size_bytes")
+    expected_sha256 = entry.get("output_sha256")
+    selected_rows = entry.get("selected_rows")
+    quote_rows = entry.get("quote_rows")
+    deal_rows = entry.get("deal_rows")
+    source_rows = entry.get("source_rows")
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+        or not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or not isinstance(selected_rows, int)
+        or isinstance(selected_rows, bool)
+        or selected_rows < 0
+        or not isinstance(quote_rows, int)
+        or isinstance(quote_rows, bool)
+        or quote_rows < 0
+        or not isinstance(deal_rows, int)
+        or isinstance(deal_rows, bool)
+        or deal_rows < 0
+        or not isinstance(source_rows, int)
+        or isinstance(source_rows, bool)
+        or source_rows < selected_rows
+        or selected_rows != quote_rows + deal_rows
+    ):
+        raise UnableToNormalizeConsolidatedDataError(
+            f"Normalization manifest has invalid counts or identity: {output_path.name}"
+        )
+    if output_path.stat().st_size != expected_size:
+        raise UnableToNormalizeConsolidatedDataError(
+            f"Normalized output size mismatch: {output_path}"
+        )
+    if _sha256_file(path=output_path) != expected_sha256:
+        raise UnableToNormalizeConsolidatedDataError(
+            f"Normalized output checksum mismatch: {output_path}"
+        )
+    return selected_rows
 
 
 def _remove_prior_outputs(

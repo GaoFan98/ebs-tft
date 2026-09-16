@@ -135,6 +135,31 @@ def normalize_consolidated_ebs(
     )
 
 
+@app.command("verify-normalized-ebs")
+def verify_normalized_ebs(
+    output_dir: Path = typer.Option(
+        ...,
+        "--output-dir",
+        help="Directory containing canonical files and their provenance manifest.",
+    ),
+    year: int = typer.Option(..., "--year", min=1),
+    instrument: str = typer.Option("EUR_USD", "--instrument"),
+) -> None:
+    """Verify portable canonical files without requiring consolidated sources."""
+    try:
+        parsed_instrument = orderbook_models.Instrument(instrument)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "instrument must be EUR_USD, USD_JPY, or EUR_JPY",
+            param_hint="--instrument",
+        ) from exc
+    data_ingestion.verify_normalized_year(
+        output_dir=output_dir.resolve(),
+        year=year,
+        instrument=parsed_instrument,
+    )
+
+
 @app.command("research-session-audit")
 def research_session_audit(
     config: Path = typer.Option(

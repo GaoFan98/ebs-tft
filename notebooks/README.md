@@ -39,6 +39,12 @@ uv run ebs-tft normalize-consolidated-ebs \
   --instrument EUR_USD
 ```
 
+Only the resulting canonical `*EBS_LVL2_EUR_USD_0.csv.gz` files and
+`normalization_2023_EUR_USD.json` need to be copied to RunPod. The preflight
+verifies every copied byte against the manifest, so the much larger consolidated
+source files do not need to be uploaded. If the manifest is absent, the preflight
+instead normalizes the consolidated sources on RunPod.
+
 Do not pass `--replace-output` when resuming. The standalone
 `data/raw/2023/EBS_Level2_20230601.csv` is an exact decompressed duplicate of the
 June 1 gzip and is deliberately ignored.
