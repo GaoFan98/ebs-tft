@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+from typing import cast
 
 import polars as pl
 
 from ebs_tft.application.usecases import research_protocol
 from ebs_tft.application.usecases.research_protocol import _depth_extension
+from ebs_tft.domain.research import models as research_models
 
 
-def _protocol():  # type: ignore[no-untyped-def]
+def _protocol() -> research_models.ResearchProtocol:
     return research_protocol.load_protocol(
         path=Path("notebooks/research_protocol.yaml")
     )
@@ -57,9 +59,11 @@ def test_paired_depth_comparisons_respect_metric_direction() -> None:
     assert actual.height == 10
     assert actual["sessions"].unique().to_list() == [20]
     assert actual["metric_passed"].all()
-    assert actual.filter(pl.col("metric") == "log_loss")[
-        "confidence_upper"
-    ].max() < 0
+    confidence_upper = cast(
+        float,
+        actual.filter(pl.col("metric") == "log_loss")["confidence_upper"].max(),
+    )
+    assert confidence_upper < 0
 
 
 def test_depth_decision_requires_both_primary_metrics() -> None:
@@ -68,17 +72,14 @@ def test_depth_decision_requires_both_primary_metrics() -> None:
         metrics=_metrics(improvement=0.02), protocol=protocol
     ).with_columns(
         pl.when(
-            (pl.col("model") == "deeplob_direction")
-            & (pl.col("metric") == "macro_f1")
+            (pl.col("model") == "deeplob_direction") & (pl.col("metric") == "macro_f1")
         )
         .then(False)
         .otherwise(pl.col("metric_passed"))
         .alias("metric_passed")
     )
 
-    actual = _depth_extension._decision(
-        comparisons=comparisons, protocol=protocol
-    )
+    actual = _depth_extension._decision(comparisons=comparisons, protocol=protocol)
 
     assert actual["deeper_depth_supported_by_model"] == {
         "deeplob_direction": False,
@@ -96,5 +97,7 @@ def test_session_deltas_average_seeds_before_pairing() -> None:
     )
 
     assert actual.height == 40
-    assert abs(actual["macro_f1_delta"].min() - 0.02) < 1e-12
-    assert abs(actual["log_loss_delta"].max() + 0.02) < 1e-12
+    macro_f1_delta = cast(float, actual["macro_f1_delta"].min())
+    log_loss_delta = cast(float, actual["log_loss_delta"].max())
+    assert abs(macro_f1_delta - 0.02) < 1e-12
+    assert abs(log_loss_delta + 0.02) < 1e-12

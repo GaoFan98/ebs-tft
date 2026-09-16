@@ -120,9 +120,7 @@ def freeze_plan(
     if not isinstance(raw_candidates, list) or not raw_candidates:
         raise ValueError("neural benchmark admitted no locked-evaluation candidate")
     development_sessions = _development_sessions(folds=folds)
-    final_sessions = _final_sessions(
-        manifest_path=manifest_path, protocol=protocol
-    )
+    final_sessions = _final_sessions(manifest_path=manifest_path, protocol=protocol)
     cells: list[dict[str, object]] = []
     for raw_candidate in raw_candidates:
         if not isinstance(raw_candidate, dict):
@@ -177,8 +175,7 @@ def freeze_plan(
                     "depth": depth,
                     "horizon_milliseconds": horizon_milliseconds,
                     "horizon_steps": (
-                        horizon_milliseconds
-                        // protocol.state_interval_milliseconds
+                        horizon_milliseconds // protocol.state_interval_milliseconds
                     ),
                     "seed": seed,
                     "fixed_epochs": final_epochs,
@@ -189,13 +186,9 @@ def freeze_plan(
         "schema_version": 1,
         "implementation_version": LOCKED_EVALUATION_IMPLEMENTATION_VERSION,
         **expected_hashes,
-        "neural_run_summary_sha256": _baseline._sha256_file(
-            path=neural_summary_path
-        ),
+        "neural_run_summary_sha256": _baseline._sha256_file(path=neural_summary_path),
         "neural_gate_sha256": _baseline._sha256_file(path=neural_gate_path),
-        "neural_run_identity_sha256": _baseline._sha256_file(
-            path=neural_identity_path
-        ),
+        "neural_run_identity_sha256": _baseline._sha256_file(path=neural_identity_path),
         "neural_comparisons_sha256": _baseline._sha256_file(path=comparison_path),
         "training_duration_rule": (
             "upper median of best_epoch across the development folds, "
@@ -496,9 +489,7 @@ def _verify_plan_inputs(
             protocol.output_dir / "neural_benchmark" / "run_identity.json"
         ),
         "neural_comparisons_sha256": (
-            protocol.output_dir
-            / "neural_benchmark"
-            / "paired_baseline_comparisons.csv"
+            protocol.output_dir / "neural_benchmark" / "paired_baseline_comparisons.csv"
         ),
     }
     if any(
@@ -510,13 +501,12 @@ def _verify_plan_inputs(
         raise ValueError("frozen plan is not pre-evaluation evidence")
 
 
-def _verify_sources(
-    *, sessions: tuple[research_models.SessionIdentity, ...]
-) -> None:
+def _verify_sources(*, sessions: tuple[research_models.SessionIdentity, ...]) -> None:
     for item in sessions:
-        if not item.path.is_file() or _baseline._sha256_file(
-            path=item.path
-        ) != item.sha256:
+        if (
+            not item.path.is_file()
+            or _baseline._sha256_file(path=item.path) != item.sha256
+        ):
             raise ValueError(f"raw source does not match frozen plan: {item.path}")
 
 
@@ -633,9 +623,7 @@ def _prepare_final_corpora(
         maximum_windows=None,
         stride_steps=research_operations.training_stride_steps(
             protocol=protocol,
-            horizon_milliseconds=(
-                horizon_steps * protocol.state_interval_milliseconds
-            ),
+            horizon_milliseconds=(horizon_steps * protocol.state_interval_milliseconds),
         ),
     )
     evaluation = pilot_training.combine_sessions(
@@ -688,9 +676,7 @@ def _cell_dir(*, output_dir: Path, cell: dict[str, object]) -> Path:
 
 def _cell_fingerprint(*, cell: dict[str, object], plan_sha256: str) -> str:
     return hashlib.sha256(
-        json.dumps(
-            {"plan_sha256": plan_sha256, "cell": cell}, sort_keys=True
-        ).encode()
+        json.dumps({"plan_sha256": plan_sha256, "cell": cell}, sort_keys=True).encode()
     ).hexdigest()
 
 
@@ -846,9 +832,10 @@ def _read_fixed_checkpoint(
     if not path.is_file():
         return None
     payload = checkpoint_repository.read(path=path)
-    if payload.get("kind") != "fixed_training_state" or payload.get(
-        "fingerprint"
-    ) != fingerprint:
+    if (
+        payload.get("kind") != "fixed_training_state"
+        or payload.get("fingerprint") != fingerprint
+    ):
         raise ValueError(f"incompatible locked-evaluation checkpoint: {path}")
     raw_history = payload.get("history")
     classifier_state = payload.get("classifier_state")
@@ -953,9 +940,19 @@ def _locked_comparisons(
     metric_names = tuple(
         item.value for item in (*protocol.primary_metrics, *protocol.supporting_metrics)
     )
-    neural = metrics.filter(pl.col("seed") >= 0).group_by(
-        ["validation_date", "model", "depth", "horizon_steps", "horizon_milliseconds"]
-    ).agg([pl.col(name).mean().alias(name) for name in metric_names])
+    neural = (
+        metrics.filter(pl.col("seed") >= 0)
+        .group_by(
+            [
+                "validation_date",
+                "model",
+                "depth",
+                "horizon_steps",
+                "horizon_milliseconds",
+            ]
+        )
+        .agg([pl.col(name).mean().alias(name) for name in metric_names])
+    )
     baseline = metrics.filter(pl.col("model") == "logistic")
     rows: list[dict[str, object]] = []
     dimensions = neural.select(
@@ -1006,9 +1003,11 @@ def _locked_decision(
     primary = tuple(item.value for item in protocol.primary_metrics)
     confirmed: list[dict[str, object]] = []
     evidence: dict[str, bool] = {}
-    dimensions = comparisons.select(
-        "model", "depth", "horizon_milliseconds"
-    ).unique().sort(["model", "depth", "horizon_milliseconds"])
+    dimensions = (
+        comparisons.select("model", "depth", "horizon_milliseconds")
+        .unique()
+        .sort(["model", "depth", "horizon_milliseconds"])
+    )
     for dimension in dimensions.iter_rows(named=True):
         rows = comparisons.filter(
             (pl.col("model") == dimension["model"])

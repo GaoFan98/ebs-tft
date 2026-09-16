@@ -145,9 +145,7 @@ def freeze_plan(
         candidate = cast(dict[str, object], raw_candidate)
         model_name = _locked._string(candidate, "model")
         depth = _locked._integer(candidate, "depth")
-        horizon_milliseconds = _locked._integer(
-            candidate, "horizon_milliseconds"
-        )
+        horizon_milliseconds = _locked._integer(candidate, "horizon_milliseconds")
         matching_locked_cells = [
             cast(dict[str, object], item)
             for item in raw_locked_cells
@@ -161,9 +159,7 @@ def freeze_plan(
         ):
             raise ValueError("confirmed candidate lacks every frozen seed checkpoint")
         for locked_cell in matching_locked_cells:
-            source_dir = _locked._cell_dir(
-                output_dir=locked_dir, cell=locked_cell
-            )
+            source_dir = _locked._cell_dir(output_dir=locked_dir, cell=locked_cell)
             checkpoint_path = source_dir / "final.pt"
             summary_path = source_dir / "cell_summary.json"
             if not checkpoint_path.is_file() or not summary_path.is_file():
@@ -186,8 +182,7 @@ def freeze_plan(
                         "depth": depth,
                         "horizon_milliseconds": horizon_milliseconds,
                         "horizon_steps": (
-                            horizon_milliseconds
-                            // protocol.state_interval_milliseconds
+                            horizon_milliseconds // protocol.state_interval_milliseconds
                         ),
                         "seed": _locked._integer(locked_cell, "seed"),
                         "source_checkpoint": str(
@@ -202,12 +197,8 @@ def freeze_plan(
         "manifest_sha256": _baseline._sha256_file(path=manifest_path),
         "audit_sha256": _baseline._sha256_file(path=audit_path),
         "locked_plan_sha256": _baseline._sha256_file(path=locked_plan_path),
-        "locked_run_summary_sha256": _baseline._sha256_file(
-            path=locked_summary_path
-        ),
-        "locked_decision_sha256": _baseline._sha256_file(
-            path=locked_decision_path
-        ),
+        "locked_run_summary_sha256": _baseline._sha256_file(path=locked_summary_path),
+        "locked_decision_sha256": _baseline._sha256_file(path=locked_decision_path),
         "locked_comparisons_sha256": _baseline._sha256_file(
             path=locked_comparisons_path
         ),
@@ -264,8 +255,7 @@ def freeze_plan(
     print(
         "target_sessions="
         + ",".join(
-            f"{item.value}:{len(target_sessions[item])}"
-            for item in target_instruments
+            f"{item.value}:{len(target_sessions[item])}" for item in target_instruments
         )
     )
     print(f"inference_cells={len(cells)}")
@@ -458,8 +448,7 @@ def run(
             "EBS frozen cross-instrument evaluation completed",
             "WARNING: target outcomes are now inspected; do not tune and rerun.",
             f"source_instrument={protocol.development_instrument.value}",
-            "target_instruments="
-            + ",".join(item.value for item in target_sessions),
+            "target_instruments=" + ",".join(item.value for item in target_sessions),
             f"target_sessions={sum(len(item) for item in target_sessions.values())}",
             f"inference_cells={len(cells)}",
             f"confirmed_transfers={len(confirmed)}",
@@ -623,13 +612,12 @@ def _verify_plan_inputs(
         raise ValueError("cross-instrument plan violates the frozen boundary")
 
 
-def _verify_sources(
-    *, sessions: tuple[research_models.SessionIdentity, ...]
-) -> None:
+def _verify_sources(*, sessions: tuple[research_models.SessionIdentity, ...]) -> None:
     for item in sessions:
-        if not item.path.is_file() or _baseline._sha256_file(
-            path=item.path
-        ) != item.sha256:
+        if (
+            not item.path.is_file()
+            or _baseline._sha256_file(path=item.path) != item.sha256
+        ):
             raise ValueError(f"raw source does not match frozen plan: {item.path}")
 
 
@@ -724,9 +712,7 @@ def _prepare_source_training(
         maximum_windows=None,
         stride_steps=research_operations.training_stride_steps(
             protocol=protocol,
-            horizon_milliseconds=(
-                horizon_steps * protocol.state_interval_milliseconds
-            ),
+            horizon_milliseconds=(horizon_steps * protocol.state_interval_milliseconds),
         ),
     )
     return scaler, training
@@ -836,9 +822,7 @@ def _completed_cell(
         != _baseline._sha256_file(path=metrics_path)
     ):
         raise ValueError(f"cross-instrument cell failed integrity check: {cell_dir}")
-    metrics = pl.read_csv(
-        metrics_path, schema_overrides={"validation_date": pl.Date}
-    )
+    metrics = pl.read_csv(metrics_path, schema_overrides={"validation_date": pl.Date})
     if set(metrics["validation_date"].to_list()) != {
         item.trading_date for item in sessions
     }:
@@ -861,9 +845,7 @@ def _evaluate_cell(
     sessions: tuple[research_models.SessionIdentity, ...],
     instrument: orderbook_models.Instrument,
 ) -> pl.DataFrame:
-    checkpoint_path = protocol.output_dir / _locked._string(
-        cell, "source_checkpoint"
-    )
+    checkpoint_path = protocol.output_dir / _locked._string(cell, "source_checkpoint")
     if _baseline._sha256_file(path=checkpoint_path) != _locked._string(
         cell, "source_checkpoint_sha256"
     ):
@@ -904,9 +886,7 @@ def _evaluate_cell(
     _neural._write_text_atomically(
         text=json.dumps(
             {
-                "fingerprint": _cell_fingerprint(
-                    cell=cell, plan_sha256=plan_sha256
-                ),
+                "fingerprint": _cell_fingerprint(cell=cell, plan_sha256=plan_sha256),
                 "source_checkpoint_sha256": _locked._string(
                     cell, "source_checkpoint_sha256"
                 ),
@@ -998,22 +978,28 @@ def _comparisons(
     metric_names = tuple(
         item.value for item in (*protocol.primary_metrics, *protocol.supporting_metrics)
     )
-    neural = metrics.filter(pl.col("seed") >= 0).group_by(
-        [
-            "instrument",
-            "validation_date",
-            "model",
-            "depth",
-            "horizon_steps",
-            "horizon_milliseconds",
-        ]
-    ).agg([pl.col(name).mean().alias(name) for name in metric_names])
+    neural = (
+        metrics.filter(pl.col("seed") >= 0)
+        .group_by(
+            [
+                "instrument",
+                "validation_date",
+                "model",
+                "depth",
+                "horizon_steps",
+                "horizon_milliseconds",
+            ]
+        )
+        .agg([pl.col(name).mean().alias(name) for name in metric_names])
+    )
     baseline = metrics.filter(pl.col("model") == "logistic")
     rows: list[dict[str, object]] = []
-    dimensions = neural.select(
-        "instrument", "model", "depth", "horizon_steps", "horizon_milliseconds"
-    ).unique().sort(
-        ["instrument", "model", "depth", "horizon_steps", "horizon_milliseconds"]
+    dimensions = (
+        neural.select(
+            "instrument", "model", "depth", "horizon_steps", "horizon_milliseconds"
+        )
+        .unique()
+        .sort(["instrument", "model", "depth", "horizon_steps", "horizon_milliseconds"])
     )
     for dimension in dimensions.iter_rows(named=True):
         selected = neural.filter(
@@ -1059,9 +1045,11 @@ def _decision(
     primary = tuple(item.value for item in protocol.primary_metrics)
     evidence: dict[str, bool] = {}
     confirmed: list[dict[str, object]] = []
-    dimensions = comparisons.select(
-        "instrument", "model", "depth", "horizon_milliseconds"
-    ).unique().sort(["instrument", "model", "depth", "horizon_milliseconds"])
+    dimensions = (
+        comparisons.select("instrument", "model", "depth", "horizon_milliseconds")
+        .unique()
+        .sort(["instrument", "model", "depth", "horizon_milliseconds"])
+    )
     for dimension in dimensions.iter_rows(named=True):
         rows = comparisons.filter(
             (pl.col("instrument") == dimension["instrument"])

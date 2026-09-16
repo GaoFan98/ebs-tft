@@ -122,9 +122,9 @@ def test_audit_manifest_and_baseline_gate_remain_chronological(
 
     audit_data = pl.read_csv(audit.audit_path)
     assert audit_data.height == 18
-    locked = audit_data.filter(pl.col("evaluation_locked"))
-    assert locked.height == 6
-    assert locked["total_h100"].null_count() == 6
+    locked_audit = audit_data.filter(pl.col("evaluation_locked"))
+    assert locked_audit.height == 6
+    assert locked_audit["total_h100"].null_count() == 6
     with audit.manifest_path.open(encoding="utf-8") as stream:
         manifest = yaml.safe_load(stream)
     folds = manifest["development_folds"]["EUR_USD"]

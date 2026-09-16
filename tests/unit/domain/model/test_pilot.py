@@ -376,9 +376,7 @@ class TestFitClassifierFixedEpochs:
         )
         model.set_random_seed(seed=41)
         partial_classifier = _AuxiliaryClassifier()
-        partial = _fit_fixed(
-            classifier=partial_classifier, training=training, epochs=1
-        )
+        partial = _fit_fixed(classifier=partial_classifier, training=training, epochs=1)
         resumed_classifier = _AuxiliaryClassifier()
         resumed = _fit_fixed(
             classifier=resumed_classifier,
