@@ -82,7 +82,7 @@ def run(
     audited = list(_audit_files(files=files, protocol=protocol))
 
     audit_path = protocol.output_dir / "session_audit.csv"
-    pl.DataFrame([item.row for item in audited]).sort(
+    _audit_frame(rows=(item.row for item in audited)).sort(
         ["instrument", "trading_date"]
     ).write_csv(audit_path)
     manifest = _manifest(
@@ -137,6 +137,11 @@ def run(
         summary_path=summary_path,
         terminal_summary_path=terminal_summary_path,
     )
+
+
+def _audit_frame(*, rows: Iterable[dict[str, object]]) -> pl.DataFrame:
+    """Build an audit frame after inspecting every row for nullable field types."""
+    return pl.from_dicts(list(rows), infer_schema_length=None)
 
 
 def _instrument_summary(
