@@ -363,6 +363,26 @@ confusion matrices, frozen training details, and complete final per-session metr
 This is a reporting-only operation: it cannot train, tune, select, or evaluate a
 model.
 
+For the fixed-period EUR/USD study, run the same reporting command with
+`research_2023_2024_protocol.yaml` and an explicit longitudinal report directory.
+It verifies the baseline, four-cell development benchmark, frozen plan, four-cell
+March replication, and all decision tables before producing the workbook:
+
+```bash
+uv run --no-sync ebs-tft research-final-report \
+  --config notebooks/research_2023_2024_protocol.yaml \
+  --output-dir reports/2023_2024_analysis
+```
+
+This report labels March as retrospective replication because those dates were
+inspected in the earlier study. It cannot train, select, tune, or reevaluate a
+model. After inspection, create the compact evidence archive without the large
+per-window prediction files:
+
+```bash
+bash scripts/runpod/package_2023_2024_evidence.sh
+```
+
 ## Outputs and resumption
 
 Multi-session output contains `terminal_summary.txt`, `run_summary.json`, one native
