@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import math
 import platform
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 import attrs
+import numpy as np
 import polars as pl
 import sklearn
 import torch
@@ -141,6 +143,7 @@ def run(
             "level_10_cache_manifest_sha256": _baseline._sha256_file(
                 path=deep_cache_manifest
             ),
+            "corpus_preparation": "disk_backed_window_preserving_v1",
         }
     _verify_or_write_identity(output_dir=output_dir, identity=identity)
     device = model_domain.select_device(requested=policy.device)
@@ -231,6 +234,7 @@ def run(
                     training_dataset=training_dataset,
                     validation_dataset=validation_dataset,
                     validation_corpus=validation_corpus,
+                    move_datasets_to_device=not fixed_period,
                 )
             )
             new_cells += 1
@@ -463,7 +467,7 @@ def _prepare_deep_corpora(
     output_dir: Path,
     horizon_steps: int,
 ) -> tuple[pilot_training.PreparedCorpus, pilot_training.PreparedCorpus]:
-    """Prepare matched Level-10 training and validation corpora."""
+    """Prepare disk-backed Level-10 corpora within bounded host memory."""
     scaler = pilot_training.fit_feature_scaler(
         sessions=(
             _extract_deep_session(
@@ -478,49 +482,253 @@ def _prepare_deep_corpora(
     context_steps = (
         protocol.context_milliseconds // protocol.state_interval_milliseconds
     )
-    training = pilot_training.combine_sessions(
-        sessions=tuple(
-            pilot_training.apply_feature_scaler(
-                session=_extract_deep_session(
-                    protocol=protocol,
-                    identity=item,
-                    output_dir=output_dir,
-                    horizon_steps=horizon_steps,
-                ),
-                scaler=scaler,
-            )
-            for item in fold.training_sessions
-        ),
-        context_steps=context_steps,
+    training = _prepare_memmap_corpus(
+        protocol=protocol,
+        identities=fold.training_sessions,
+        output_dir=output_dir,
+        scaler=scaler,
         horizon_steps=horizon_steps,
-        maximum_windows=None,
+        context_steps=context_steps,
         stride_steps=research_operations.training_stride_steps(
             protocol=protocol,
             horizon_milliseconds=(horizon_steps * protocol.state_interval_milliseconds),
         ),
+        pack_selected_windows=True,
+        name="training",
     )
-    validation = pilot_training.combine_sessions(
-        sessions=tuple(
-            pilot_training.apply_feature_scaler(
-                session=_extract_deep_session(
-                    protocol=protocol,
-                    identity=item,
-                    output_dir=output_dir,
-                    horizon_steps=horizon_steps,
-                ),
-                scaler=scaler,
-            )
-            for item in fold.validation_sessions
-        ),
-        context_steps=context_steps,
+    validation = _prepare_memmap_corpus(
+        protocol=protocol,
+        identities=fold.validation_sessions,
+        output_dir=output_dir,
+        scaler=scaler,
         horizon_steps=horizon_steps,
-        maximum_windows=None,
+        context_steps=context_steps,
         stride_steps=(
             protocol.evaluation_stride_milliseconds
             // protocol.state_interval_milliseconds
         ),
+        pack_selected_windows=False,
+        name="validation",
     )
     return training, validation
+
+
+def _prepare_memmap_corpus(
+    *,
+    protocol: research_models.ResearchProtocol,
+    identities: tuple[research_models.SessionIdentity, ...],
+    output_dir: Path,
+    scaler: pilot_training.FeatureScaler,
+    horizon_steps: int,
+    context_steps: int,
+    stride_steps: int,
+    pack_selected_windows: bool,
+    name: str,
+) -> pilot_training.PreparedCorpus:
+    """Return one preallocated disk-backed corpus without concatenation copies."""
+    plans: list[tuple[research_models.SessionIdentity, int, int]] = []
+    total_rows = 0
+    total_targets = 0
+    for identity in identities:
+        session = _extract_deep_session(
+            protocol=protocol,
+            identity=identity,
+            output_dir=output_dir,
+            horizon_steps=horizon_steps,
+        )
+        targets = _selected_targets(
+            session=session,
+            context_steps=context_steps,
+            horizon_steps=horizon_steps,
+            stride_steps=stride_steps,
+        )
+        stored_rows = (
+            len(targets) * context_steps
+            if pack_selected_windows
+            else len(session.labels)
+        )
+        plans.append((identity, len(targets), stored_rows))
+        total_rows += stored_rows
+        total_targets += len(targets)
+        del session, targets
+    if total_rows <= 0 or total_targets <= 0:
+        raise ValueError(f"{name} corpus contains no valid Level-10 windows")
+
+    corpus_dir = output_dir / "working_corpora" / name
+    corpus_dir.mkdir(parents=True, exist_ok=True)
+    lob = _new_memmap(
+        path=corpus_dir / "lob.float32",
+        dtype=np.dtype(np.float32),
+        shape=(total_rows, _DEEP_DEPTH, len(pilot_training.LOB_FEATURE_ORDER)),
+    )
+    auxiliary = _new_memmap(
+        path=corpus_dir / "auxiliary.float32",
+        dtype=np.dtype(np.float32),
+        shape=(total_rows, len(pilot_training.AUXILIARY_FEATURE_ORDER)),
+    )
+    labels = _new_memmap(
+        path=corpus_dir / "labels.int64",
+        dtype=np.dtype(np.int64),
+        shape=(total_rows,),
+    )
+    timestamps = _new_memmap(
+        path=corpus_dir / "timestamps.datetime64us",
+        dtype=np.dtype("datetime64[us]"),
+        shape=(total_rows,),
+    )
+    mid_prices = _new_memmap(
+        path=corpus_dir / "mid_prices.float64",
+        dtype=np.dtype(np.float64),
+        shape=(total_rows,),
+    )
+    selected = np.empty(total_targets, dtype=np.int64)
+    offsets: list[int] = []
+    lengths: list[int] = []
+    windows: list[pilot_training.SessionWindowSummary] = []
+    row_cursor = 0
+    target_cursor = 0
+    context_offsets = np.arange(1 - context_steps, 1, dtype=np.int64)
+    for position, (identity, expected_targets, stored_rows) in enumerate(
+        plans, start=1
+    ):
+        print(
+            f"[depth-extension] prepare-{name}={position}/{len(plans)} "
+            f"date={identity.trading_date.isoformat()}",
+            flush=True,
+        )
+        raw = _extract_deep_session(
+            protocol=protocol,
+            identity=identity,
+            output_dir=output_dir,
+            horizon_steps=horizon_steps,
+        )
+        targets = _selected_targets(
+            session=raw,
+            context_steps=context_steps,
+            horizon_steps=horizon_steps,
+            stride_steps=stride_steps,
+        )
+        if len(targets) != expected_targets:
+            raise ValueError("Level-10 target selection changed during preparation")
+        scaled = pilot_training.apply_feature_scaler(session=raw, scaler=scaler)
+        offsets.append(row_cursor)
+        lengths.append(stored_rows)
+        if pack_selected_windows:
+            for start in range(0, len(targets), 512):
+                batch_targets = targets[start : start + 512]
+                source = batch_targets[:, None] + context_offsets[None, :]
+                batch_rows = len(batch_targets) * context_steps
+                destination = slice(row_cursor, row_cursor + batch_rows)
+                lob[destination] = scaled.lob_features[source].reshape(
+                    batch_rows, _DEEP_DEPTH, len(pilot_training.LOB_FEATURE_ORDER)
+                )
+                auxiliary[destination] = scaled.auxiliary_features[source].reshape(
+                    batch_rows, len(pilot_training.AUXILIARY_FEATURE_ORDER)
+                )
+                labels[destination] = scaled.labels[source].reshape(batch_rows)
+                timestamps[destination] = scaled.timestamps[source].reshape(batch_rows)
+                mid_prices[destination] = scaled.mid_prices[source].reshape(batch_rows)
+                target_count = len(batch_targets)
+                selected[target_cursor : target_cursor + target_count] = (
+                    np.arange(target_count, dtype=np.int64) * context_steps
+                    + row_cursor
+                    + context_steps
+                    - 1
+                )
+                target_cursor += target_count
+                row_cursor += batch_rows
+        else:
+            destination = slice(row_cursor, row_cursor + stored_rows)
+            lob[destination] = scaled.lob_features
+            auxiliary[destination] = scaled.auxiliary_features
+            labels[destination] = scaled.labels
+            timestamps[destination] = scaled.timestamps.astype("datetime64[us]")
+            mid_prices[destination] = scaled.mid_prices
+            selected[target_cursor : target_cursor + len(targets)] = (
+                targets + row_cursor
+            )
+            target_cursor += len(targets)
+            row_cursor += stored_rows
+        windows.append(
+            pilot_training.SessionWindowSummary(
+                trading_date=identity.trading_date,
+                candidates=len(
+                    _selected_targets(
+                        session=raw,
+                        context_steps=context_steps,
+                        horizon_steps=horizon_steps,
+                        stride_steps=1,
+                    )
+                ),
+                selected=len(targets),
+                stride_steps=stride_steps,
+                timestamp_from=_timestamp_at(
+                    timestamps=raw.timestamps, index=int(targets[0])
+                ),
+                timestamp_to=_timestamp_at(
+                    timestamps=raw.timestamps, index=int(targets[-1])
+                ),
+            )
+        )
+        del raw, scaled, targets
+    for array in (lob, auxiliary, labels, timestamps, mid_prices):
+        array.flush()
+    if row_cursor != total_rows or target_cursor != total_targets:
+        raise ValueError(f"{name} corpus allocation was not filled exactly")
+    return pilot_training.PreparedCorpus(
+        lob_features=lob,
+        auxiliary_features=auxiliary,
+        labels=labels,
+        timestamps=timestamps,
+        mid_prices=mid_prices,
+        target_indices=selected,
+        session_offsets=tuple(offsets),
+        session_lengths=tuple(lengths),
+        session_windows=tuple(windows),
+    )
+
+
+def _selected_targets(
+    *,
+    session: pilot_training.RawSessionData,
+    context_steps: int,
+    horizon_steps: int,
+    stride_steps: int,
+) -> np.ndarray:
+    """Return valid target indices with the protocol stride applied per session."""
+    targets = np.arange(
+        context_steps - 1,
+        len(session.labels) - horizon_steps,
+        dtype=np.int64,
+    )
+    observed = session.observed.astype(np.int64, copy=False)
+    cumulative = np.empty(len(observed) + 1, dtype=np.int64)
+    cumulative[0] = 0
+    np.cumsum(observed, out=cumulative[1:])
+    starts = targets - context_steps + 1
+    valid = (session.labels[targets] >= 0) & (
+        cumulative[targets + 1] - cumulative[starts] == context_steps
+    )
+    selected = np.asarray(targets[valid][::stride_steps], dtype=np.int64)
+    if not len(selected):
+        raise ValueError(f"session {session.trading_date} contains no valid windows")
+    return selected
+
+
+def _new_memmap(
+    *, path: Path, dtype: np.dtype[np.generic], shape: tuple[int, ...]
+) -> np.memmap:
+    """Create one bounded writable memory map, replacing only its scratch file."""
+    path.unlink(missing_ok=True)
+    return np.memmap(path, mode="w+", dtype=dtype, shape=shape)
+
+
+def _timestamp_at(*, timestamps: np.ndarray, index: int) -> datetime.datetime:
+    """Return one Python datetime-compatible timestamp for a window summary."""
+    return cast(
+        datetime.datetime,
+        timestamps[index].astype("datetime64[us]").astype(datetime.datetime),
+    )
 
 
 def _validate_design(*, protocol: research_models.ResearchProtocol) -> None:
@@ -706,8 +914,19 @@ def _run_identity(
 def _verify_or_write_identity(*, output_dir: Path, identity: dict[str, object]) -> None:
     identity_path = output_dir / "run_identity.json"
     if identity_path.is_file():
-        if _neural._json_mapping(path=identity_path) != identity:
-            raise ValueError("depth-extension inputs changed; use --replace-output")
+        loaded = _neural._json_mapping(path=identity_path)
+        if loaded != identity:
+            legacy_identity = dict(identity)
+            legacy_identity.pop("corpus_preparation", None)
+            cells_dir = output_dir / "cells"
+            resumable_upgrade = loaded == legacy_identity and not (
+                cells_dir.exists() and any(cells_dir.rglob("cell_summary.json"))
+            )
+            if not resumable_upgrade:
+                raise ValueError("depth-extension inputs changed; use --replace-output")
+            _neural._write_text_atomically(
+                text=json.dumps(identity, indent=2), path=identity_path
+            )
         return
     cells_dir = output_dir / "cells"
     if cells_dir.exists() and any(cells_dir.rglob("cell_summary.json")):

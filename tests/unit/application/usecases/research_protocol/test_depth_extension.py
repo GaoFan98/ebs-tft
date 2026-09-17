@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import polars as pl
 
 from ebs_tft.application.usecases import research_protocol
 from ebs_tft.application.usecases.research_protocol import _depth_extension
+from ebs_tft.domain.pilot import training as pilot_training
 from ebs_tft.domain.research import models as research_models
 
 
@@ -109,3 +112,52 @@ def test_fixed_period_design_reuses_declared_level_1_evidence() -> None:
     )
 
     _depth_extension._validate_design(protocol=protocol)
+
+
+def test_memory_bounded_target_selection_matches_canonical_corpus() -> None:
+    rows = 20
+    session = pilot_training.RawSessionData(
+        trading_date=date(2024, 1, 2),
+        lob_features=np.zeros((rows, 1, 6), dtype=np.float32),
+        auxiliary_features=np.zeros((rows, 10), dtype=np.float32),
+        labels=np.asarray([0, 1, 2, -1, 0] * 4, dtype=np.int64),
+        timestamps=np.arange(rows).astype("datetime64[us]"),
+        mid_prices=np.ones(rows, dtype=np.float64),
+        observed=np.asarray([True] * 8 + [False] + [True] * 11),
+    )
+
+    expected = pilot_training.combine_sessions(
+        sessions=(session,),
+        context_steps=3,
+        horizon_steps=2,
+        maximum_windows=None,
+        stride_steps=2,
+    ).target_indices
+
+    actual = _depth_extension._selected_targets(
+        session=session,
+        context_steps=3,
+        horizon_steps=2,
+        stride_steps=2,
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_identity_upgrade_preserves_completed_cache_before_first_cell(
+    tmp_path: Path,
+) -> None:
+    legacy = {"schema_version": 1, "input": "unchanged"}
+    identity = {
+        **legacy,
+        "corpus_preparation": "disk_backed_window_preserving_v1",
+    }
+    path = tmp_path / "run_identity.json"
+    path.write_text(json.dumps(legacy, indent=2), encoding="utf-8")
+
+    _depth_extension._verify_or_write_identity(
+        output_dir=tmp_path,
+        identity=identity,
+    )
+
+    assert json.loads(path.read_text(encoding="utf-8")) == identity

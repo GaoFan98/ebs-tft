@@ -616,12 +616,14 @@ def _fit_cell(
     training_dataset: model_domain.SequenceDataset,
     validation_dataset: model_domain.SequenceDataset,
     validation_corpus: pilot_training.PreparedCorpus,
+    move_datasets_to_device: bool = True,
 ) -> pl.DataFrame:
     cell.output_dir.mkdir(parents=True, exist_ok=True)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    training_dataset.to(device)
-    validation_dataset.to(device)
+    if move_datasets_to_device:
+        training_dataset.to(device)
+        validation_dataset.to(device)
     model_domain.set_random_seed(seed=cell.seed)
     classifier = model_domain.build_direction_classifier(
         model_name=cell.model_name,
