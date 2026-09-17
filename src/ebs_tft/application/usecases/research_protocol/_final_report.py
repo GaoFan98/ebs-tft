@@ -49,6 +49,13 @@ def run(
     replace_output: bool,
 ) -> FinalReportResult:
     """Verify completed evidence and render deterministic tables and figures."""
+    if isinstance(protocol.split_policy, research_models.FixedPeriodSplitPolicy):
+        return _run_longitudinal(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            output_dir=output_dir,
+            replace_output=replace_output,
+        )
     source_root = protocol.output_dir
     paths = _required_paths(source_root=source_root)
     _require_files(paths=paths)
@@ -248,6 +255,369 @@ def run(
         report_path=workbook_path,
         locked_confirmed_candidates=locked_confirmed,
         confirmed_cross_instrument_transfers=cross_confirmed,
+    )
+
+
+def _run_longitudinal(
+    *,
+    protocol: research_models.ResearchProtocol,
+    protocol_path: Path,
+    output_dir: Path,
+    replace_output: bool,
+) -> FinalReportResult:
+    """Verify and report the fixed-period 2023-2024 EUR/USD experiment."""
+    paths = _longitudinal_required_paths(source_root=protocol.output_dir)
+    _require_files(paths=paths)
+    artifact_repository.prepare_run_directory(
+        path=output_dir,
+        replace=replace_output,
+        replacement_parent=output_dir.parent,
+    )
+
+    neural_comparisons = _read_csv(paths["neural_comparisons"])
+    locked_comparisons = _read_csv(paths["locked_comparisons"])
+    locked_metrics = _read_csv(paths["locked_metrics"])
+    neural_decision = _json_mapping(paths["neural_decision"])
+    locked_decision = _json_mapping(paths["locked_decision"])
+    neural_summary = _json_mapping(paths["neural_summary"])
+    locked_summary = _json_mapping(paths["locked_summary"])
+    locked_plan = _json_mapping(paths["locked_plan"])
+    audit_summary = _json_mapping(paths["audit_summary"])
+    baseline_decision = _json_mapping(paths["baseline_decision"])
+    _verify_longitudinal_evidence(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        paths=paths,
+        neural_comparisons=neural_comparisons,
+        locked_comparisons=locked_comparisons,
+        locked_metrics=locked_metrics,
+        neural_decision=neural_decision,
+        locked_decision=locked_decision,
+        neural_summary=neural_summary,
+        locked_summary=locked_summary,
+        locked_plan=locked_plan,
+        baseline_decision=baseline_decision,
+    )
+
+    development = _stage_comparisons(
+        data=neural_comparisons, stage="development_validation"
+    )
+    replication = _stage_comparisons(data=locked_comparisons, stage="march_replication")
+    primary_evidence = pl.concat(
+        [
+            development.filter(pl.col("metric").is_in(_PRIMARY_METRICS)),
+            replication.filter(pl.col("metric").is_in(_PRIMARY_METRICS)),
+        ]
+    ).sort(["stage", "model", "metric"])
+    absolute_metrics = _absolute_summary(
+        data=locked_metrics, stage="march_replication"
+    ).sort(["model", "metric"])
+    session_deltas = _session_deltas(
+        data=locked_metrics, stage="march_replication"
+    ).sort(["model", "validation_date"])
+    model_summary = _model_summary(
+        absolute_metrics=absolute_metrics,
+        comparisons=replication,
+        locked_metrics=locked_metrics,
+        cross_metrics=locked_metrics.head(0),
+    )
+    data_usage = _longitudinal_data_usage(
+        protocol=protocol,
+        plan=locked_plan,
+        audit_summary=audit_summary,
+        metrics=locked_metrics,
+        validation_sessions=_single_integer(neural_comparisons, column="sessions"),
+    )
+    class_balance = _class_balance(metrics=locked_metrics)
+    confusion_matrices = _confusion_matrices(metrics=locked_metrics)
+    training_details = _training_details(paths=paths, metrics=locked_metrics)
+    stability = _session_stability(session_deltas=session_deltas)
+
+    outputs = {
+        "development_comparisons.csv": development,
+        "replication_comparisons.csv": replication,
+        "primary_evidence.csv": primary_evidence,
+        "absolute_metric_summary.csv": absolute_metrics,
+        "session_primary_deltas.csv": session_deltas,
+        "model_performance_summary.csv": model_summary,
+        "data_usage.csv": data_usage,
+        "class_balance.csv": class_balance,
+        "confusion_matrices.csv": confusion_matrices,
+        "training_details.csv": training_details,
+        "session_stability.csv": stability,
+    }
+    for filename, data in outputs.items():
+        data.write_csv(output_dir / filename)
+    (output_dir / "development_primary_effects.svg").write_text(
+        _forest_svg(
+            evidence=primary_evidence.filter(
+                pl.col("stage") == "development_validation"
+            ),
+            title="January-February validation: primary effects vs logistic",
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "replication_primary_effects.svg").write_text(
+        _forest_svg(
+            evidence=primary_evidence.filter(pl.col("stage") == "march_replication"),
+            title="March retrospective replication: primary effects vs logistic",
+        ),
+        encoding="utf-8",
+    )
+
+    final_dates = _plan_session_dates(plan=locked_plan, key="final_test_sessions")
+    development_dates = _plan_session_dates(
+        plan=locked_plan, key="development_sessions"
+    )
+    confirmed = _list_length(locked_decision, "confirmed_candidates")
+    split_policy = cast(research_models.FixedPeriodSplitPolicy, protocol.split_policy)
+    training_dates = [
+        item
+        for item in development_dates
+        if item <= split_policy.training_end_date.isoformat()
+    ]
+    summary: dict[str, object] = {
+        "schema_version": 1,
+        "status": "complete",
+        "instrument": protocol.development_instrument.value,
+        "training_period_start": min(training_dates),
+        "training_period_end": max(training_dates),
+        "validation_period_start": split_policy.validation_start_date.isoformat(),
+        "validation_period_end": split_policy.development_end_date.isoformat(),
+        "replication_dates": final_dates,
+        "training_sessions": len(training_dates),
+        "validation_sessions": _single_integer(neural_comparisons, column="sessions"),
+        "replication_sessions": len(final_dates),
+        "audited_sessions": _integer(audit_summary, "discovered_sessions"),
+        "eligible_sessions": _integer(audit_summary, "eligible_sessions"),
+        "neural_benchmark_cells": _integer(neural_summary, "cells"),
+        "confirmed_candidates": confirmed,
+        "state_interval_milliseconds": protocol.state_interval_milliseconds,
+        "forecast_horizon_milliseconds": protocol.forecast_horizons_milliseconds[0],
+        "depth": protocol.depths[0],
+        "minute_aggregation_used": False,
+        "replication_outcomes_used": True,
+        "retuning_permitted": False,
+        "evidence_status": "retrospective_replication_not_pristine",
+        "headline_conclusion": (
+            "Both frozen Level-1 30-second EUR/USD neural candidates beat the "
+            "same-data logistic reference on January-February validation and "
+            "the four-session March retrospective replication."
+        ),
+    }
+    _write_json(path=output_dir / "study_summary.json", value=summary)
+    workbook_path = output_dir / "ebs_tft_2023_2024_longitudinal_analysis.xlsx"
+    _write_longitudinal_workbook(
+        path=workbook_path,
+        summary=summary,
+        development=development,
+        replication=replication,
+        primary_evidence=primary_evidence,
+        absolute_metrics=absolute_metrics,
+        model_summary=model_summary,
+        data_usage=data_usage,
+        class_balance=class_balance,
+        confusion_matrices=confusion_matrices,
+        training_details=training_details,
+        session_deltas=session_deltas,
+        stability=stability,
+        locked_metrics=locked_metrics,
+    )
+    _write_json(
+        path=output_dir / "run_summary.json",
+        value={
+            **summary,
+            "report": str(workbook_path.resolve()),
+            "artifact_manifest": str((output_dir / "artifact_manifest.json").resolve()),
+        },
+    )
+    paths["protocol"] = protocol_path
+    manifest = {
+        "schema_version": 1,
+        "inputs": {
+            name: {"path": str(path), "sha256": _sha256(path)}
+            for name, path in sorted(paths.items())
+        },
+        "outputs": {
+            path.name: _sha256(path)
+            for path in sorted(output_dir.iterdir())
+            if path.name != "artifact_manifest.json"
+        },
+    }
+    _write_json(path=output_dir / "artifact_manifest.json", value=manifest)
+    print("EBS 2023-2024 longitudinal evidence report completed")
+    print("WARNING: reporting only; March outcomes were not used for retuning.")
+    print(f"confirmed_candidates={confirmed}")
+    print(f"report={workbook_path.resolve()}")
+    return FinalReportResult(
+        output_dir=output_dir,
+        report_path=workbook_path,
+        locked_confirmed_candidates=confirmed,
+        confirmed_cross_instrument_transfers=0,
+    )
+
+
+def _longitudinal_required_paths(*, source_root: Path) -> dict[str, Path]:
+    neural = source_root / "neural_benchmark"
+    locked = source_root / "locked_evaluation"
+    baseline = source_root / "baseline_gate"
+    paths = {
+        "protocol": Path(),
+        "audit_summary": source_root / "audit_summary.json",
+        "session_audit": source_root / "session_audit.csv",
+        "split_manifest": source_root / "split_manifest.yaml",
+        "baseline_decision": baseline / "gate_decision.json",
+        "baseline_summary": baseline / "run_summary.json",
+        "neural_summary": neural / "run_summary.json",
+        "neural_decision": neural / "gate_decision.json",
+        "neural_comparisons": neural / "paired_baseline_comparisons.csv",
+        "locked_plan": locked / "plan.json",
+        "locked_summary": locked / "run_summary.json",
+        "locked_decision": locked / "decision.json",
+        "locked_comparisons": locked / "paired_baseline_comparisons.csv",
+        "locked_metrics": locked / "session_metrics.csv",
+    }
+    for model in ("deeplob_direction", "tft_direction"):
+        for seed in (7, 19):
+            paths[f"locked_cell_{model}_seed_{seed}"] = (
+                locked
+                / "cells"
+                / "h30000"
+                / "depth_1"
+                / model
+                / f"seed_{seed}"
+                / "cell_summary.json"
+            )
+    return paths
+
+
+def _verify_longitudinal_evidence(
+    *,
+    protocol: research_models.ResearchProtocol,
+    protocol_path: Path,
+    paths: dict[str, Path],
+    neural_comparisons: pl.DataFrame,
+    locked_comparisons: pl.DataFrame,
+    locked_metrics: pl.DataFrame,
+    neural_decision: dict[str, object],
+    locked_decision: dict[str, object],
+    neural_summary: dict[str, object],
+    locked_summary: dict[str, object],
+    locked_plan: dict[str, object],
+    baseline_decision: dict[str, object],
+) -> None:
+    if not protocol_path.is_file():
+        raise FileNotFoundError(f"missing protocol: {protocol_path}")
+    if _string(neural_summary, "protocol_sha256") != _sha256(protocol_path):
+        raise ValueError("neural evidence does not match the current protocol")
+    expected_cells = len(protocol.models) * len(protocol.random_seeds)
+    if _integer(neural_summary, "cells") != expected_cells:
+        raise ValueError(
+            f"longitudinal neural benchmark must contain {expected_cells} cells"
+        )
+    if baseline_decision.get("eligible_for_neural_benchmark") is not True:
+        raise ValueError("baseline evidence did not admit the neural benchmark")
+    if locked_summary.get("locked_evaluation_used") is not True:
+        raise ValueError("March replication evaluation is incomplete")
+    if locked_plan.get("locked_outcomes_inspected") is not False:
+        raise ValueError("frozen plan was created after outcomes were inspected")
+    if _string(locked_summary, "plan_sha256") != _sha256(paths["locked_plan"]):
+        raise ValueError("replication evaluation plan hash mismatch")
+
+    _validate_comparison_table(data=neural_comparisons, instrument_required=False)
+    _validate_comparison_table(data=locked_comparisons, instrument_required=False)
+    _validate_metric_table(data=locked_metrics, expected_instruments={"EUR_USD"})
+    expected_neural = _neural._gate_decision(
+        comparisons=neural_comparisons, protocol=protocol
+    )
+    expected_locked = _locked._locked_decision(
+        comparisons=locked_comparisons, protocol=protocol
+    )
+    if _normalized_decision(neural_decision) != _normalized_decision(expected_neural):
+        raise ValueError("neural gate decision does not match its comparison evidence")
+    if _normalized_decision(locked_decision) != _normalized_decision(expected_locked):
+        raise ValueError("replication decision does not match its comparison evidence")
+    final_dates = _plan_session_dates(plan=locked_plan, key="final_test_sessions")
+    metric_dates = sorted(
+        set(locked_metrics["validation_date"].cast(pl.String).to_list())
+    )
+    if final_dates != metric_dates:
+        raise ValueError("replication metric dates do not match the frozen plan")
+
+
+def _longitudinal_data_usage(
+    *,
+    protocol: research_models.ResearchProtocol,
+    plan: dict[str, object],
+    audit_summary: dict[str, object],
+    metrics: pl.DataFrame,
+    validation_sessions: int,
+) -> pl.DataFrame:
+    split_policy = cast(research_models.FixedPeriodSplitPolicy, protocol.split_policy)
+    development_dates = _plan_session_dates(plan=plan, key="development_sessions")
+    training_dates = [
+        item
+        for item in development_dates
+        if item <= split_policy.training_end_date.isoformat()
+    ]
+    validation_dates = [
+        item
+        for item in development_dates
+        if split_policy.validation_start_date.isoformat()
+        <= item
+        <= split_policy.development_end_date.isoformat()
+    ]
+    final_dates = _plan_session_dates(plan=plan, key="final_test_sessions")
+    if len(validation_dates) != validation_sessions:
+        raise ValueError("plan validation sessions do not match neural evidence")
+    baseline = metrics.filter(pl.col("model") == "logistic")
+    if baseline.height != len(final_dates):
+        raise ValueError("expected one logistic row per replication session")
+    return pl.DataFrame(
+        [
+            {
+                "instrument": protocol.development_instrument.value,
+                "audited_sessions": _integer(audit_summary, "discovered_sessions"),
+                "eligible_sessions": _integer(audit_summary, "eligible_sessions"),
+                "training_sessions": len(training_dates),
+                "training_period": f"{min(training_dates)} to {max(training_dates)}",
+                "validation_sessions": len(validation_dates),
+                "validation_period": (
+                    f"{split_policy.validation_start_date.isoformat()} to "
+                    f"{split_policy.development_end_date.isoformat()}"
+                ),
+                "replication_sessions": len(final_dates),
+                "replication_dates": ", ".join(final_dates),
+                "replication_observations": int(baseline["observations"].sum()),
+                "minimum_observations_per_session": int(
+                    _finite_number(baseline["observations"].min())
+                ),
+                "maximum_observations_per_session": int(
+                    _finite_number(baseline["observations"].max())
+                ),
+                "state_interval_milliseconds": protocol.state_interval_milliseconds,
+                "forecast_horizon_milliseconds": (
+                    protocol.forecast_horizons_milliseconds[0]
+                ),
+                "depth": protocol.depths[0],
+                "minute_aggregation_used": False,
+            }
+        ]
+    )
+
+
+def _session_stability(*, session_deltas: pl.DataFrame) -> pl.DataFrame:
+    return (
+        session_deltas.group_by("stage", "instrument", "model")
+        .agg(
+            pl.len().alias("sessions"),
+            (pl.col("macro_f1_delta") > 0).sum().alias("macro_f1_positive"),
+            (pl.col("mcc_delta") > 0).sum().alias("mcc_positive"),
+            ((pl.col("macro_f1_delta") > 0) & (pl.col("mcc_delta") > 0))
+            .sum()
+            .alias("both_positive"),
+        )
+        .sort("stage", "instrument", "model")
     )
 
 
@@ -809,6 +1179,269 @@ def _forest_svg(*, evidence: pl.DataFrame, title: str) -> str:
     return "\n".join(elements) + "\n"
 
 
+def _write_longitudinal_workbook(
+    *,
+    path: Path,
+    summary: dict[str, object],
+    development: pl.DataFrame,
+    replication: pl.DataFrame,
+    primary_evidence: pl.DataFrame,
+    absolute_metrics: pl.DataFrame,
+    model_summary: pl.DataFrame,
+    data_usage: pl.DataFrame,
+    class_balance: pl.DataFrame,
+    confusion_matrices: pl.DataFrame,
+    training_details: pl.DataFrame,
+    session_deltas: pl.DataFrame,
+    stability: pl.DataFrame,
+    locked_metrics: pl.DataFrame,
+) -> None:
+    workbook = xlsxwriter.Workbook(path)
+    workbook.set_properties(
+        {
+            "title": "EBS TFT 2023-2024 longitudinal evidence report",
+            "subject": "EUR/USD native-resolution 30-second direction forecast",
+            "author": "EBS TFT research workflow",
+            "comments": "Reporting only; no post-replication retuning permitted.",
+        }
+    )
+    formats = _workbook_formats(workbook=workbook)
+    _write_longitudinal_summary_sheet(
+        workbook=workbook,
+        formats=formats,
+        summary=summary,
+        model_summary=model_summary,
+        data_usage=data_usage,
+    )
+    model_sheet = _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Final Model Tests",
+        data=model_summary,
+    )
+    _add_model_charts(workbook=workbook, sheet=model_sheet, data=model_summary)
+    for name, data in (
+        ("Data Usage", data_usage),
+        ("Primary Evidence", primary_evidence),
+        ("Absolute Metrics", absolute_metrics),
+        ("Development Validation", development),
+        ("March Replication", replication),
+        ("Session Deltas", session_deltas),
+        ("Session Stability", stability),
+        ("Class Balance", class_balance),
+        ("Confusion Matrices", confusion_matrices),
+        ("Training Details", training_details),
+        ("Final Raw Sessions", locked_metrics),
+    ):
+        _write_frame_sheet(
+            workbook=workbook,
+            formats=formats,
+            name=name,
+            data=data,
+        )
+    notes = pl.DataFrame(
+        [
+            {
+                "topic": "Forecasting task",
+                "detail": (
+                    "Three-class EUR/USD direction prediction 30 seconds ahead "
+                    "from native 100-ms Level-1 reconstructed states."
+                ),
+            },
+            {
+                "topic": "No minute aggregation",
+                "detail": (
+                    "Raw observations were not converted to one-minute or "
+                    "five-minute bars."
+                ),
+            },
+            {
+                "topic": "Statistical unit",
+                "detail": (
+                    "Confidence intervals resample trading sessions, not the "
+                    "millions of overlapping 100-ms evaluation windows."
+                ),
+            },
+            {
+                "topic": "Replication limitation",
+                "detail": (
+                    "The four March dates were inspected in an earlier study, so "
+                    "this is retrospective replication rather than pristine "
+                    "untouched confirmation."
+                ),
+            },
+            {
+                "topic": "Economic interpretation",
+                "detail": (
+                    "Classification improvements do not establish profitability; "
+                    "spread, latency, slippage, and position rules were not tested."
+                ),
+            },
+            {
+                "topic": "Retuning",
+                "detail": "Retuning or rerunning against March outcomes is prohibited.",
+            },
+        ]
+    )
+    _write_frame_sheet(
+        workbook=workbook,
+        formats=formats,
+        name="Methodology Notes",
+        data=notes,
+    )
+    workbook.close()
+
+
+def _write_longitudinal_summary_sheet(
+    *,
+    workbook: xlsxwriter.Workbook,
+    formats: dict[str, xlsxwriter.format.Format],
+    summary: dict[str, object],
+    model_summary: pl.DataFrame,
+    data_usage: pl.DataFrame,
+) -> None:
+    sheet = workbook.add_worksheet("Executive Summary")
+    sheet.hide_gridlines(2)
+    sheet.set_tab_color("#1F4E78")
+    sheet.set_column("A:A", 24)
+    sheet.set_column("B:B", 20)
+    sheet.set_column("C:E", 15)
+    sheet.set_column("F:F", 18)
+    sheet.set_column("G:N", 14)
+    sheet.merge_range(
+        "A1:N1", "EBS TFT — 2023–2024 Longitudinal Evidence", formats["title"]
+    )
+    sheet.merge_range(
+        "A2:N2",
+        "EUR/USD native-resolution direction forecasting; frozen comparisons "
+        "against the same-data logistic reference.",
+        formats["subtitle"],
+    )
+    rows = (
+        ("Conclusion", summary["headline_conclusion"]),
+        (
+            "Interpretation",
+            "Promising forecasting evidence, but not evidence of a profitable or "
+            "production-ready trading strategy.",
+        ),
+        (
+            "Training period",
+            f"{summary['training_period_start']} to {summary['training_period_end']}",
+        ),
+        (
+            "Validation period",
+            f"{summary['validation_period_start']} to "
+            f"{summary['validation_period_end']}",
+        ),
+        (
+            "March replication dates",
+            ", ".join(cast(list[str], summary["replication_dates"])),
+        ),
+        ("Training sessions", summary["training_sessions"]),
+        ("Validation sessions", summary["validation_sessions"]),
+        ("Replication sessions", summary["replication_sessions"]),
+        ("Native state interval", "100 milliseconds"),
+        ("Forecast horizon", "30 seconds"),
+        ("Order-book depth", "Level 1"),
+        ("Minute aggregation", "No"),
+        ("Confirmed candidates", summary["confirmed_candidates"]),
+        ("Evidence status", "Retrospective replication; not pristine"),
+        ("Retuning permitted", "No"),
+    )
+    sheet.write_row(3, 0, ("Study scope", "Value"), formats["header"])
+    sheet.merge_range(3, 1, 3, 13, "Value", formats["header"])
+    for row_index, (label, value) in enumerate(rows, start=4):
+        sheet.write(row_index, 0, label)
+        sheet.merge_range(row_index, 1, row_index, 13, value, formats["text"])
+    sheet.set_row(4, 44)
+
+    table_row = 21
+    headers = (
+        "Model",
+        "Sessions",
+        "Observations",
+        "Macro F1",
+        "Logistic F1",
+        "F1 delta",
+        "F1 95% CI",
+        "MCC",
+        "Logistic MCC",
+        "MCC delta",
+        "MCC 95% CI",
+        "Decision",
+    )
+    sheet.merge_range(
+        table_row - 1,
+        0,
+        table_row - 1,
+        len(headers) - 1,
+        "March replication — absolute scores and paired session-bootstrap effects",
+        formats["section"],
+    )
+    sheet.write_row(table_row, 0, headers, formats["header"])
+    for offset, row in enumerate(model_summary.iter_rows(named=True), start=1):
+        values = (
+            _display_model(str(row["model"])),
+            row["sessions"],
+            row["evaluation_observations"],
+            row["macro_f1"],
+            row["logistic_macro_f1"],
+            row["macro_f1_delta"],
+            _interval(row["macro_f1_ci_lower"], row["macro_f1_ci_upper"]),
+            row["mcc"],
+            row["logistic_mcc"],
+            row["mcc_delta"],
+            _interval(row["mcc_ci_lower"], row["mcc_ci_upper"]),
+            "PASS" if row["primary_gate_passed"] else "FAIL",
+        )
+        for column_index, value in enumerate(values):
+            cell_format = None
+            if column_index in {1, 2}:
+                cell_format = formats["integer"]
+            elif column_index in {3, 4, 5, 7, 8, 9}:
+                cell_format = formats["number"]
+            elif column_index == 11:
+                cell_format = (
+                    formats["pass"] if row["primary_gate_passed"] else formats["fail"]
+                )
+            sheet.write(table_row + offset, column_index, value, cell_format)
+    note_row = table_row + model_summary.height + 2
+    sheet.merge_range(
+        note_row,
+        0,
+        note_row,
+        13,
+        "Statistical unit warning: the confidence intervals resample four trading "
+        "sessions, not millions of overlapping 100-ms windows.",
+        formats["warning"],
+    )
+    sheet.set_row(note_row, 32)
+    usage_row = note_row + 2
+    sheet.merge_range(
+        usage_row, 0, usage_row, 13, "Data actually used", formats["section"]
+    )
+    usage = data_usage.row(0, named=True)
+    usage_rows = (
+        ("Audited sessions", usage["audited_sessions"]),
+        ("Eligible sessions", usage["eligible_sessions"]),
+        ("Training sessions", usage["training_sessions"]),
+        ("Validation sessions", usage["validation_sessions"]),
+        ("Replication observations", usage["replication_observations"]),
+        ("Replication dates", usage["replication_dates"]),
+    )
+    for offset, (label, value) in enumerate(usage_rows, start=1):
+        sheet.write(usage_row + offset, 0, label)
+        sheet.merge_range(
+            usage_row + offset,
+            1,
+            usage_row + offset,
+            13,
+            value,
+            formats["text"],
+        )
+    sheet.freeze_panes(table_row + 1, 0)
+
+
 def _write_workbook(
     *,
     path: Path,
@@ -1195,7 +1828,8 @@ def _add_model_charts(
 ) -> None:
     first_row = 1
     last_row = data.height
-    categories = ["Model Summary", first_row, 2, last_row, 2]
+    source_sheet = sheet.get_name()
+    categories = [source_sheet, first_row, 2, last_row, 2]
     for title, neural_column, logistic_column, position in (
         ("Macro F1: neural versus logistic", 7, 8, "W2"),
         ("MCC: neural versus logistic", 12, 13, "W20"),
@@ -1206,7 +1840,7 @@ def _add_model_charts(
                 "name": "Neural model",
                 "categories": categories,
                 "values": [
-                    "Model Summary",
+                    source_sheet,
                     first_row,
                     neural_column,
                     last_row,
@@ -1220,7 +1854,7 @@ def _add_model_charts(
                 "name": "Logistic reference",
                 "categories": categories,
                 "values": [
-                    "Model Summary",
+                    source_sheet,
                     first_row,
                     logistic_column,
                     last_row,

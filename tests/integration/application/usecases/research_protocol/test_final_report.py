@@ -99,6 +99,45 @@ def test_refuses_decision_that_does_not_match_evidence(tmp_path: Path) -> None:
         )
 
 
+def test_builds_verified_longitudinal_report(tmp_path: Path) -> None:
+    protocol_path = Path("notebooks/research_2023_2024_protocol.yaml").resolve()
+    protocol = attrs.evolve(
+        research_protocol.load_protocol(path=protocol_path),
+        output_dir=tmp_path / "longitudinal_evidence",
+    )
+    _write_longitudinal_evidence(
+        root=protocol.output_dir,
+        protocol_path=protocol_path,
+    )
+    output = tmp_path / "longitudinal_report_outputs"
+
+    result = research_protocol.run_final_report(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        output_dir=output,
+        replace_output=False,
+    )
+
+    assert result.locked_confirmed_candidates == 2
+    assert result.confirmed_cross_instrument_transfers == 0
+    workbook = output / "ebs_tft_2023_2024_longitudinal_analysis.xlsx"
+    assert workbook.is_file()
+    with zipfile.ZipFile(workbook) as archive:
+        workbook_xml = archive.read("xl/workbook.xml").decode()
+    assert "Executive Summary" in workbook_xml
+    assert "Final Model Tests" in workbook_xml
+    assert "Development Validation" in workbook_xml
+    assert "March Replication" in workbook_xml
+    assert "Methodology Notes" in workbook_xml
+    summary = json.loads((output / "study_summary.json").read_text())
+    assert summary["training_sessions"] == 2
+    assert summary["validation_sessions"] == 2
+    assert summary["replication_sessions"] == 4
+    assert summary["minute_aggregation_used"] is False
+    assert summary["evidence_status"] == "retrospective_replication_not_pristine"
+    assert (output / "artifact_manifest.json").is_file()
+
+
 def _write_evidence(*, root: Path, protocol_path: Path) -> None:
     loaded = research_protocol.load_protocol(path=protocol_path)
     neural = root / "neural_benchmark"
@@ -189,6 +228,99 @@ def _write_evidence(*, root: Path, protocol_path: Path) -> None:
             "neural_retraining_used": False,
         },
     )
+
+
+def _write_longitudinal_evidence(*, root: Path, protocol_path: Path) -> None:
+    loaded = research_protocol.load_protocol(path=protocol_path)
+    baseline = root / "baseline_gate"
+    neural = root / "neural_benchmark"
+    locked = root / "locked_evaluation"
+    for path in (root, baseline, neural, locked):
+        path.mkdir(parents=True, exist_ok=True)
+
+    neural_comparisons = pl.DataFrame(
+        [
+            _comparison_row(
+                model=model,
+                metric=metric,
+                horizon=30000,
+                sessions=2,
+                lower=0.01 if metric in {"macro_f1", "mcc"} else -0.01,
+            )
+            for model in ("deeplob_direction", "tft_direction")
+            for metric in _METRICS
+        ]
+    )
+    locked_comparisons = _locked_comparisons()
+    locked_metrics = _session_metrics(instruments=("EUR_USD",))
+    neural_comparisons.write_csv(neural / "paired_baseline_comparisons.csv")
+    locked_comparisons.write_csv(locked / "paired_baseline_comparisons.csv")
+    locked_metrics.write_csv(locked / "session_metrics.csv")
+    _write_json(
+        neural / "gate_decision.json",
+        _neural._gate_decision(comparisons=neural_comparisons, protocol=loaded),
+    )
+    _write_json(
+        locked / "decision.json",
+        _locked._locked_decision(comparisons=locked_comparisons, protocol=loaded),
+    )
+    _write_json(
+        neural / "run_summary.json",
+        {"protocol_sha256": _sha256(protocol_path), "cells": 4},
+    )
+    _write_json(
+        baseline / "gate_decision.json",
+        {"eligible_for_neural_benchmark": True},
+    )
+    _write_json(baseline / "run_summary.json", {"folds": 1})
+    development_dates = (
+        "2023-12-28",
+        "2023-12-29",
+        "2024-01-02",
+        "2024-01-03",
+    )
+    final_dates = ("2024-03-06", "2024-03-13", "2024-03-20", "2024-03-27")
+    _write_json(
+        locked / "plan.json",
+        {
+            "development_sessions": [
+                {"trading_date": date} for date in development_dates
+            ],
+            "final_test_sessions": [{"trading_date": date} for date in final_dates],
+            "locked_outcomes_inspected": False,
+        },
+    )
+    for model, parameter_count in (
+        ("deeplob_direction", 15_860),
+        ("tft_direction", 52_581),
+    ):
+        for seed, fixed_epochs in ((7, 2), (19, 4)):
+            cell = locked / "cells" / "h30000" / "depth_1" / model / f"seed_{seed}"
+            cell.mkdir(parents=True)
+            _write_json(
+                cell / "cell_summary.json",
+                {
+                    "fixed_epochs": fixed_epochs,
+                    "parameter_count": parameter_count,
+                    "fit_elapsed_seconds": 10.0,
+                    "locked_evaluation_used": True,
+                },
+            )
+    _write_json(
+        locked / "run_summary.json",
+        {
+            "plan_sha256": _sha256(locked / "plan.json"),
+            "locked_evaluation_used": True,
+        },
+    )
+    _write_json(
+        root / "audit_summary.json",
+        {"discovered_sessions": 10, "eligible_sessions": 8},
+    )
+    (root / "session_audit.csv").write_text(
+        "instrument,trading_date\n", encoding="utf-8"
+    )
+    (root / "split_manifest.yaml").write_text("schema_version: 1\n", encoding="utf-8")
 
 
 def _neural_comparisons() -> pl.DataFrame:
