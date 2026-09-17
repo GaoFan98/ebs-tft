@@ -101,3 +101,11 @@ def test_session_deltas_average_seeds_before_pairing() -> None:
     log_loss_delta = cast(float, actual["log_loss_delta"].max())
     assert abs(macro_f1_delta - 0.02) < 1e-12
     assert abs(log_loss_delta + 0.02) < 1e-12
+
+
+def test_fixed_period_design_reuses_declared_level_1_evidence() -> None:
+    protocol = research_protocol.load_protocol(
+        path=Path("notebooks/research_2023_2024_protocol.yaml")
+    )
+
+    _depth_extension._validate_design(protocol=protocol)

@@ -6,6 +6,7 @@ import json
 import math
 import platform
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import cast
 
@@ -16,8 +17,11 @@ import torch
 import xlsxwriter
 
 from ebs_tft.application.usecases.research_protocol import _baseline, _neural
+from ebs_tft.data.parsers import ebs_csv
 from ebs_tft.data.repositories import artifact as artifact_repository
 from ebs_tft.domain import model as model_domain
+from ebs_tft.domain.pilot import operations as pilot_operations
+from ebs_tft.domain.pilot import training as pilot_training
 from ebs_tft.domain.research import models as research_models
 from ebs_tft.domain.research import operations as research_operations
 
@@ -123,6 +127,21 @@ def run(
         original_summary_path=original_summary_path,
         original_gate_path=original_gate_path,
     )
+    fixed_period = isinstance(
+        protocol.split_policy, research_models.FixedPeriodSplitPolicy
+    )
+    if fixed_period:
+        deep_cache_manifest = _materialize_deep_cache(
+            protocol=protocol,
+            folds=folds,
+            output_dir=output_dir,
+        )
+        identity = {
+            **identity,
+            "level_10_cache_manifest_sha256": _baseline._sha256_file(
+                path=deep_cache_manifest
+            ),
+        }
     _verify_or_write_identity(output_dir=output_dir, identity=identity)
     device = model_domain.select_device(requested=policy.device)
     horizon_steps = _HORIZON_MILLISECONDS // protocol.state_interval_milliseconds
@@ -157,12 +176,20 @@ def run(
         if not pending:
             continue
         preparation_started = time.perf_counter()
-        training_corpus, validation_corpus = _neural._prepare_corpora(
-            protocol=protocol,
-            fold=fold,
-            depth=_DEEP_DEPTH,
-            horizon_steps=horizon_steps,
-        )
+        if fixed_period:
+            training_corpus, validation_corpus = _prepare_deep_corpora(
+                protocol=protocol,
+                fold=fold,
+                output_dir=output_dir,
+                horizon_steps=horizon_steps,
+            )
+        else:
+            training_corpus, validation_corpus = _neural._prepare_corpora(
+                protocol=protocol,
+                fold=fold,
+                depth=_DEEP_DEPTH,
+                horizon_steps=horizon_steps,
+            )
         print(
             f"[depth-extension] corpus={fold.identifier}:h{_HORIZON_MILLISECONDS}:"
             f"d{_DEEP_DEPTH} training_windows={len(training_corpus.target_indices)} "
@@ -330,13 +357,184 @@ def run(
     )
 
 
+def _materialize_deep_cache(
+    *,
+    protocol: research_models.ResearchProtocol,
+    folds: tuple[research_models.RollingFold, ...],
+    output_dir: Path,
+) -> Path:
+    """Materialize verified Level-10 native states without changing Level-1 cache."""
+    cache_dir = output_dir / "native_cache_level_10"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    sessions = {
+        item.trading_date: item
+        for fold in folds
+        for item in (*fold.training_sessions, *fold.validation_sessions)
+    }
+    manifest_rows: list[dict[str, str]] = []
+    ordered = tuple(sessions[key] for key in sorted(sessions))
+    for position, identity in enumerate(ordered, start=1):
+        if (
+            not identity.path.is_file()
+            or _baseline._sha256_file(path=identity.path) != identity.sha256
+        ):
+            raise ValueError(f"raw source failed integrity check: {identity.path}")
+        cache_path = cache_dir / f"{identity.trading_date.isoformat()}.parquet"
+        hash_path = cache_path.with_suffix(".sha256")
+        if cache_path.is_file() and hash_path.is_file():
+            cache_sha256 = _baseline._sha256_file(path=cache_path)
+            if hash_path.read_text(encoding="utf-8").strip() != cache_sha256:
+                raise ValueError(f"Level-10 cache failed integrity check: {cache_path}")
+        else:
+            print(
+                f"[depth-extension] reconstruct={position}/{len(ordered)} "
+                f"date={identity.trading_date.isoformat()}",
+                flush=True,
+            )
+            with closing(
+                ebs_csv.parse_rows(
+                    path=identity.path,
+                    expected_instrument=identity.instrument,
+                    expected_trading_date=identity.trading_date,
+                )
+            ) as records:
+                states = pilot_operations.build_native_states(
+                    records=records,
+                    instrument=identity.instrument,
+                    trading_date=identity.trading_date,
+                    grid_steps=None,
+                    maximum_staleness_steps=(
+                        protocol.maximum_staleness_milliseconds
+                        // protocol.state_interval_milliseconds
+                    ),
+                    maximum_depth=_DEEP_DEPTH,
+                )
+            temporary = cache_path.with_suffix(".parquet.tmp")
+            states.write_parquet(temporary)
+            temporary.replace(cache_path)
+            cache_sha256 = _baseline._sha256_file(path=cache_path)
+            _neural._write_text_atomically(text=cache_sha256, path=hash_path)
+        manifest_rows.append(
+            {
+                "trading_date": identity.trading_date.isoformat(),
+                "raw_sha256": identity.sha256,
+                "cache_sha256": cache_sha256,
+            }
+        )
+    manifest_path = output_dir / "level_10_cache_manifest.json"
+    serialized = json.dumps(manifest_rows, indent=2)
+    if (
+        manifest_path.is_file()
+        and manifest_path.read_text(encoding="utf-8") != serialized
+    ):
+        raise ValueError("Level-10 cache manifest changed; use --replace-output")
+    _neural._write_text_atomically(text=serialized, path=manifest_path)
+    return manifest_path
+
+
+def _extract_deep_session(
+    *,
+    protocol: research_models.ResearchProtocol,
+    identity: research_models.SessionIdentity,
+    output_dir: Path,
+    horizon_steps: int,
+) -> pilot_training.RawSessionData:
+    """Return one Level-10 session from the extension-owned native cache."""
+    cache_path = (
+        output_dir
+        / "native_cache_level_10"
+        / f"{identity.trading_date.isoformat()}.parquet"
+    )
+    states = pilot_operations.add_direction_targets(
+        data=pl.read_parquet(cache_path), horizon_steps=(horizon_steps,)
+    )
+    return pilot_training.extract_session(
+        data=states,
+        trading_date=identity.trading_date,
+        depth=_DEEP_DEPTH,
+        horizon_steps=horizon_steps,
+    )
+
+
+def _prepare_deep_corpora(
+    *,
+    protocol: research_models.ResearchProtocol,
+    fold: research_models.RollingFold,
+    output_dir: Path,
+    horizon_steps: int,
+) -> tuple[pilot_training.PreparedCorpus, pilot_training.PreparedCorpus]:
+    """Prepare matched Level-10 training and validation corpora."""
+    scaler = pilot_training.fit_feature_scaler(
+        sessions=(
+            _extract_deep_session(
+                protocol=protocol,
+                identity=item,
+                output_dir=output_dir,
+                horizon_steps=horizon_steps,
+            )
+            for item in fold.training_sessions
+        )
+    )
+    context_steps = (
+        protocol.context_milliseconds // protocol.state_interval_milliseconds
+    )
+    training = pilot_training.combine_sessions(
+        sessions=tuple(
+            pilot_training.apply_feature_scaler(
+                session=_extract_deep_session(
+                    protocol=protocol,
+                    identity=item,
+                    output_dir=output_dir,
+                    horizon_steps=horizon_steps,
+                ),
+                scaler=scaler,
+            )
+            for item in fold.training_sessions
+        ),
+        context_steps=context_steps,
+        horizon_steps=horizon_steps,
+        maximum_windows=None,
+        stride_steps=research_operations.training_stride_steps(
+            protocol=protocol,
+            horizon_milliseconds=(horizon_steps * protocol.state_interval_milliseconds),
+        ),
+    )
+    validation = pilot_training.combine_sessions(
+        sessions=tuple(
+            pilot_training.apply_feature_scaler(
+                session=_extract_deep_session(
+                    protocol=protocol,
+                    identity=item,
+                    output_dir=output_dir,
+                    horizon_steps=horizon_steps,
+                ),
+                scaler=scaler,
+            )
+            for item in fold.validation_sessions
+        ),
+        context_steps=context_steps,
+        horizon_steps=horizon_steps,
+        maximum_windows=None,
+        stride_steps=(
+            protocol.evaluation_stride_milliseconds
+            // protocol.state_interval_milliseconds
+        ),
+    )
+    return training, validation
+
+
 def _validate_design(*, protocol: research_models.ResearchProtocol) -> None:
     if protocol.development_instrument.value != "EUR_USD":
         raise ValueError(
             "depth extension is frozen to the EUR_USD development instrument"
         )
-    if {_SHALLOW_DEPTH, _DEEP_DEPTH} - set(protocol.depths):
-        raise ValueError("depth extension requires declared depths 1 and 10")
+    if _SHALLOW_DEPTH not in protocol.depths:
+        raise ValueError("depth extension requires declared Level 1 evidence")
+    if (
+        not isinstance(protocol.split_policy, research_models.FixedPeriodSplitPolicy)
+        and _DEEP_DEPTH not in protocol.depths
+    ):
+        raise ValueError("rolling depth extension requires declared depths 1 and 10")
     if _HORIZON_MILLISECONDS not in protocol.forecast_horizons_milliseconds:
         raise ValueError("depth extension requires the declared 30000-ms horizon")
 
@@ -369,8 +567,16 @@ def _verified_shallow_metrics(
         path=policy_path
     ):
         raise ValueError("Level-1 evidence belongs to another protocol or policy")
-    if original_summary.get("cells") != 64:
-        raise ValueError("Level-1 benchmark is not the completed 64-cell study")
+    expected_cells = (
+        len(folds)
+        * len(protocol.forecast_horizons_milliseconds)
+        * len(protocol.models)
+        * len(protocol.random_seeds)
+    )
+    if original_summary.get("cells") != expected_cells:
+        raise ValueError(
+            f"Level-1 benchmark is not the completed {expected_cells}-cell study"
+        )
     accepted = original_gate.get("accepted_model_depth_horizons")
     if not isinstance(accepted, list) or not all(
         {
@@ -746,6 +952,15 @@ def _write_workbook(
     support_by_model = cast(
         dict[str, bool], decision["deeper_depth_supported_by_model"]
     )
+    fold_count = metrics["fold"].n_unique()
+    session_count = metrics.select("fold", "validation_date").unique().height
+    level_10_cells = training.height
+    level_1_cells = (
+        metrics.filter(pl.col("depth") == _SHALLOW_DEPTH)
+        .select("fold", "model", "seed")
+        .unique()
+        .height
+    )
     workbook = xlsxwriter.Workbook(path)
     workbook.set_properties(
         {
@@ -810,13 +1025,13 @@ def _write_workbook(
         ),
         (
             "Design",
-            "Same 4 rolling folds, 20 validation sessions, 2 models, and 2 random "
-            "seeds for both depths.",
+            f"Same {fold_count} fold(s), {session_count} validation sessions, "
+            "2 models, and 2 random seeds for both depths.",
         ),
         (
             "New training",
-            "16 Level-10 cells. The existing 64-cell benchmark is reused and is "
-            "not rerun.",
+            f"{level_10_cells} Level-10 cells. The existing {level_1_cells} matched "
+            "Level-1 cells are reused and are not rerun.",
         ),
         (
             "Decision",
