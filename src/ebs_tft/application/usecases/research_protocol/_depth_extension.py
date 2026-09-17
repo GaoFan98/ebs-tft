@@ -7,6 +7,7 @@ import json
 import math
 import platform
 import time
+from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
 from typing import cast
@@ -470,13 +471,14 @@ def _prepare_deep_corpora(
     """Prepare disk-backed Level-10 corpora within bounded host memory."""
     scaler = pilot_training.fit_feature_scaler(
         sessions=(
-            _extract_deep_session(
+            session
+            for _, session in _deep_sessions_with_progress(
                 protocol=protocol,
-                identity=item,
+                identities=fold.training_sessions,
                 output_dir=output_dir,
                 horizon_steps=horizon_steps,
+                stage="fit-scaler",
             )
-            for item in fold.training_sessions
         )
     )
     context_steps = (
@@ -529,13 +531,13 @@ def _prepare_memmap_corpus(
     plans: list[tuple[research_models.SessionIdentity, int, int]] = []
     total_rows = 0
     total_targets = 0
-    for identity in identities:
-        session = _extract_deep_session(
-            protocol=protocol,
-            identity=identity,
-            output_dir=output_dir,
-            horizon_steps=horizon_steps,
-        )
+    for identity, session in _deep_sessions_with_progress(
+        protocol=protocol,
+        identities=identities,
+        output_dir=output_dir,
+        horizon_steps=horizon_steps,
+        stage=f"plan-{name}",
+    ):
         targets = _selected_targets(
             session=session,
             context_steps=context_steps,
@@ -686,6 +688,32 @@ def _prepare_memmap_corpus(
         session_lengths=tuple(lengths),
         session_windows=tuple(windows),
     )
+
+
+def _deep_sessions_with_progress(
+    *,
+    protocol: research_models.ResearchProtocol,
+    identities: tuple[research_models.SessionIdentity, ...],
+    output_dir: Path,
+    horizon_steps: int,
+    stage: str,
+) -> Iterator[tuple[research_models.SessionIdentity, pilot_training.RawSessionData]]:
+    """Yield Level-10 sessions while exposing long preparation progress."""
+    for position, identity in enumerate(identities, start=1):
+        print(
+            f"[depth-extension] {stage}={position}/{len(identities)} "
+            f"date={identity.trading_date.isoformat()}",
+            flush=True,
+        )
+        yield (
+            identity,
+            _extract_deep_session(
+                protocol=protocol,
+                identity=identity,
+                output_dir=output_dir,
+                horizon_steps=horizon_steps,
+            ),
+        )
 
 
 def _selected_targets(
