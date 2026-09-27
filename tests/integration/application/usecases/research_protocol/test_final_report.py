@@ -14,9 +14,13 @@ import pytest
 from ebs_tft.application.usecases import research_protocol
 from ebs_tft.application.usecases.research_protocol import (
     _cross_instrument,
+    _depth_extension,
+    _depth_replication,
+    _final_report,
     _locked,
     _neural,
 )
+from ebs_tft.domain.research import models as research_models
 
 _METRICS = (
     "balanced_accuracy",
@@ -109,6 +113,7 @@ def test_builds_verified_longitudinal_report(tmp_path: Path) -> None:
         root=protocol.output_dir,
         protocol_path=protocol_path,
     )
+    _write_longitudinal_depth_evidence(root=protocol.output_dir, protocol=protocol)
     output = tmp_path / "longitudinal_report_outputs"
 
     result = research_protocol.run_final_report(
@@ -128,6 +133,10 @@ def test_builds_verified_longitudinal_report(tmp_path: Path) -> None:
     assert "Final Model Tests" in workbook_xml
     assert "Development Validation" in workbook_xml
     assert "March Replication" in workbook_xml
+    assert "Depth Development" in workbook_xml
+    assert "Depth March Replication" in workbook_xml
+    assert "Depth Absolute Metrics" in workbook_xml
+    assert "Depth Session Deltas" in workbook_xml
     assert "Methodology Notes" in workbook_xml
     summary = json.loads((output / "study_summary.json").read_text())
     assert summary["training_sessions"] == 2
@@ -135,7 +144,25 @@ def test_builds_verified_longitudinal_report(tmp_path: Path) -> None:
     assert summary["replication_sessions"] == 4
     assert summary["minute_aggregation_used"] is False
     assert summary["evidence_status"] == "retrospective_replication_not_pristine"
+    assert summary["depth_comparison_complete"] is True
+    assert summary["depth_development_supported_models"] == ["deeplob_direction"]
+    assert summary["depth_replication_supported_models"] == ["deeplob_direction"]
     assert (output / "artifact_manifest.json").is_file()
+
+
+def test_longitudinal_paths_require_completed_depth_replication(
+    tmp_path: Path,
+) -> None:
+    paths = _final_report._longitudinal_required_paths(source_root=tmp_path)
+    assert "depth_replication_summary" not in paths
+
+    replication = tmp_path / "depth_replication"
+    replication.mkdir()
+    _write_json(replication / "run_summary.json", {"status": "complete"})
+
+    paths = _final_report._longitudinal_required_paths(source_root=tmp_path)
+    assert paths["depth_replication_summary"] == replication / "run_summary.json"
+    assert "depth_development_comparisons" in paths
 
 
 def _write_evidence(*, root: Path, protocol_path: Path) -> None:
@@ -321,6 +348,90 @@ def _write_longitudinal_evidence(*, root: Path, protocol_path: Path) -> None:
         "instrument,trading_date\n", encoding="utf-8"
     )
     (root / "split_manifest.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+
+
+def _write_longitudinal_depth_evidence(
+    *, root: Path, protocol: research_models.ResearchProtocol
+) -> None:
+    development = root / "depth_extension"
+    replication = root / "depth_replication"
+    development.mkdir()
+    replication.mkdir()
+    development_comparisons = pl.DataFrame(
+        [
+            _depth_comparison_row(
+                model=model,
+                metric=metric,
+                sessions=51,
+                passed=model == "deeplob_direction" and metric in {"macro_f1", "mcc"},
+            )
+            for model in ("deeplob_direction", "tft_direction")
+            for metric in _METRICS
+        ]
+    )
+    replication_comparisons = pl.DataFrame(
+        [
+            _depth_comparison_row(
+                model="deeplob_direction",
+                metric=metric,
+                sessions=4,
+                passed=metric in {"macro_f1", "mcc"},
+            )
+            for metric in _METRICS
+        ]
+    )
+    development_comparisons.write_csv(development / "paired_depth_comparisons.csv")
+    replication_comparisons.write_csv(replication / "paired_depth_comparisons.csv")
+    _write_json(
+        development / "decision.json",
+        _depth_extension._decision(
+            comparisons=development_comparisons, protocol=protocol
+        ),
+    )
+    _write_json(development / "run_summary.json", {"status": "complete"})
+    _write_json(
+        replication / "decision.json",
+        _depth_replication._replication_decision(
+            comparisons=replication_comparisons, protocol=protocol
+        ),
+    )
+    plan_path = replication / "plan.json"
+    _write_json(plan_path, {"stage": "retrospective_depth_replication"})
+    _write_json(
+        replication / "run_summary.json",
+        {
+            "status": "complete",
+            "plan_sha256": _sha256(plan_path),
+            "retrospective_replication": True,
+            "retuning_permitted": False,
+        },
+    )
+    replication_comparisons.write_csv(replication / "absolute_metric_summary.csv")
+    replication_comparisons.write_csv(replication / "session_depth_deltas.csv")
+
+
+def _depth_comparison_row(
+    *, model: str, metric: str, sessions: int, passed: bool
+) -> dict[str, object]:
+    lower = 0.001 if passed else -0.001
+    return {
+        "comparison": "seed_mean_level_10_minus_level_1",
+        "instrument": "EUR_USD",
+        "model": model,
+        "shallow_depth": 1,
+        "deep_depth": 10,
+        "horizon_milliseconds": 30_000,
+        "metric": metric,
+        "favorable_direction": (
+            "negative" if metric in {"log_loss", "multiclass_brier"} else "positive"
+        ),
+        "sessions": sessions,
+        "mean_delta": 0.005,
+        "median_delta": 0.005,
+        "confidence_lower": lower,
+        "confidence_upper": 0.01,
+        "metric_passed": passed,
+    }
 
 
 def _neural_comparisons() -> pl.DataFrame:

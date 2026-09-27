@@ -412,8 +412,31 @@ uv run --no-sync ebs-tft research-final-report \
 
 This report labels March as retrospective replication because those dates were
 inspected in the earlier study. It cannot train, select, tune, or reevaluate a
-model. After inspection, create the compact evidence archive without the large
-per-window prediction files:
+model. When the longitudinal Level-10 development comparison is complete, freeze
+its supported models before reading the matched March depth outcomes:
+
+```bash
+uv run --no-sync ebs-tft research-freeze-depth-replication \
+  --config notebooks/research_2023_2024_protocol.yaml \
+  --policy notebooks/research_2023_2024_neural.yaml
+```
+
+Pass the printed plan hash unchanged to the one-time evaluator. It trains only the
+Level-10 models admitted by the 51-session development gate and compares them with
+the already frozen Level-1 March evidence:
+
+```bash
+uv run --no-sync ebs-tft research-depth-replication \
+  --config notebooks/research_2023_2024_protocol.yaml \
+  --policy notebooks/research_2023_2024_neural.yaml \
+  --plan-sha256 <printed-plan-sha256>
+```
+
+This remains a retrospective replication because March outcomes were inspected in
+the earlier Level-1 study. It is not a new pristine holdout and cannot authorize
+retuning. Regenerate the consolidated report with `--replace-output` after this
+stage completes. Then create the compact evidence archive without native caches,
+working corpora, or per-window prediction files:
 
 ```bash
 bash scripts/runpod/package_2023_2024_evidence.sh

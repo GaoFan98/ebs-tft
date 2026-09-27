@@ -15,6 +15,8 @@ import xlsxwriter
 
 from ebs_tft.application.usecases.research_protocol import (
     _cross_instrument,
+    _depth_extension,
+    _depth_replication,
     _locked,
     _neural,
 )
@@ -298,6 +300,28 @@ def _run_longitudinal(
         locked_plan=locked_plan,
         baseline_decision=baseline_decision,
     )
+    depth_available = "depth_replication_summary" in paths
+    depth_development = pl.DataFrame()
+    depth_replication = pl.DataFrame()
+    depth_absolute = pl.DataFrame()
+    depth_deltas = pl.DataFrame()
+    depth_development_decision: dict[str, object] | None = None
+    depth_replication_decision: dict[str, object] | None = None
+    if depth_available:
+        depth_development = _read_csv(paths["depth_development_comparisons"])
+        depth_replication = _read_csv(paths["depth_replication_comparisons"])
+        depth_absolute = _read_csv(paths["depth_replication_absolute"])
+        depth_deltas = _read_csv(paths["depth_replication_deltas"])
+        depth_development_decision = _json_mapping(paths["depth_development_decision"])
+        depth_replication_decision = _json_mapping(paths["depth_replication_decision"])
+        _verify_longitudinal_depth_evidence(
+            protocol=protocol,
+            paths=paths,
+            development_comparisons=depth_development,
+            replication_comparisons=depth_replication,
+            development_decision=depth_development_decision,
+            replication_decision=depth_replication_decision,
+        )
 
     development = _stage_comparisons(
         data=neural_comparisons, stage="development_validation"
@@ -346,6 +370,15 @@ def _run_longitudinal(
         "training_details.csv": training_details,
         "session_stability.csv": stability,
     }
+    if depth_available:
+        outputs.update(
+            {
+                "depth_development_comparisons.csv": depth_development,
+                "depth_replication_comparisons.csv": depth_replication,
+                "depth_replication_absolute_metrics.csv": depth_absolute,
+                "depth_replication_session_deltas.csv": depth_deltas,
+            }
+        )
     for filename, data in outputs.items():
         data.write_csv(output_dir / filename)
     (output_dir / "development_primary_effects.svg").write_text(
@@ -405,6 +438,33 @@ def _run_longitudinal(
             "the four-session March retrospective replication."
         ),
     }
+    if depth_available:
+        if depth_development_decision is None or depth_replication_decision is None:
+            raise ValueError("depth decisions were not loaded")
+        development_supported = cast(
+            list[str], depth_development_decision["supported_models"]
+        )
+        replication_supported = cast(
+            list[str], depth_replication_decision["supported_models"]
+        )
+        summary.update(
+            {
+                "depth_comparison_complete": True,
+                "depth_development_supported_models": development_supported,
+                "depth_replication_supported_models": replication_supported,
+                "headline_conclusion": (
+                    "Both Level-1 candidates beat logistic. DeepLOB alone showed "
+                    "a supported Level-10 improvement over 51 validation sessions; "
+                    + (
+                        "that depth improvement also held in the four-session "
+                        "retrospective March replication."
+                        if replication_supported
+                        else "that depth improvement did not replicate across both "
+                        "primary metrics on the four retrospective March sessions."
+                    )
+                ),
+            }
+        )
     _write_json(path=output_dir / "study_summary.json", value=summary)
     workbook_path = output_dir / "ebs_tft_2023_2024_longitudinal_analysis.xlsx"
     _write_longitudinal_workbook(
@@ -422,6 +482,10 @@ def _run_longitudinal(
         session_deltas=session_deltas,
         stability=stability,
         locked_metrics=locked_metrics,
+        depth_development=depth_development,
+        depth_replication=depth_replication,
+        depth_absolute=depth_absolute,
+        depth_deltas=depth_deltas,
     )
     _write_json(
         path=output_dir / "run_summary.json",
@@ -488,7 +552,61 @@ def _longitudinal_required_paths(*, source_root: Path) -> dict[str, Path]:
                 / f"seed_{seed}"
                 / "cell_summary.json"
             )
+    depth = source_root / "depth_extension"
+    replication = source_root / "depth_replication"
+    if (replication / "run_summary.json").is_file():
+        paths.update(
+            {
+                "depth_development_summary": depth / "run_summary.json",
+                "depth_development_decision": depth / "decision.json",
+                "depth_development_comparisons": (
+                    depth / "paired_depth_comparisons.csv"
+                ),
+                "depth_replication_plan": replication / "plan.json",
+                "depth_replication_summary": replication / "run_summary.json",
+                "depth_replication_decision": replication / "decision.json",
+                "depth_replication_comparisons": (
+                    replication / "paired_depth_comparisons.csv"
+                ),
+                "depth_replication_absolute": (
+                    replication / "absolute_metric_summary.csv"
+                ),
+                "depth_replication_deltas": (replication / "session_depth_deltas.csv"),
+            }
+        )
     return paths
+
+
+def _verify_longitudinal_depth_evidence(
+    *,
+    protocol: research_models.ResearchProtocol,
+    paths: dict[str, Path],
+    development_comparisons: pl.DataFrame,
+    replication_comparisons: pl.DataFrame,
+    development_decision: dict[str, object],
+    replication_decision: dict[str, object],
+) -> None:
+    _validate_depth_comparison_table(data=development_comparisons)
+    _validate_depth_comparison_table(data=replication_comparisons)
+    expected_development = _depth_extension._decision(
+        comparisons=development_comparisons, protocol=protocol
+    )
+    expected_replication = _depth_replication._replication_decision(
+        comparisons=replication_comparisons, protocol=protocol
+    )
+    if development_decision != expected_development:
+        raise ValueError("depth development decision does not match its evidence")
+    if replication_decision != expected_replication:
+        raise ValueError("depth replication decision does not match its evidence")
+    summary = _json_mapping(paths["depth_replication_summary"])
+    if summary.get("status") != "complete":
+        raise ValueError("depth replication is incomplete")
+    if summary.get("retrospective_replication") is not True:
+        raise ValueError("depth replication must remain labelled retrospective")
+    if summary.get("retuning_permitted") is not False:
+        raise ValueError("depth replication unexpectedly permits retuning")
+    if _string(summary, "plan_sha256") != _sha256(paths["depth_replication_plan"]):
+        raise ValueError("depth replication plan hash mismatch")
 
 
 def _verify_longitudinal_evidence(
@@ -748,6 +866,33 @@ def _validate_comparison_table(
         raise ValueError("comparison evidence contains non-finite values")
     if bool((data["confidence_lower"] > data["confidence_upper"]).any()):
         raise ValueError("comparison evidence contains inverted intervals")
+
+
+def _validate_depth_comparison_table(*, data: pl.DataFrame) -> None:
+    required = {
+        "instrument",
+        "model",
+        "shallow_depth",
+        "deep_depth",
+        "horizon_milliseconds",
+        "metric",
+        "sessions",
+        "mean_delta",
+        "confidence_lower",
+        "confidence_upper",
+        "metric_passed",
+    }
+    if not required.issubset(data.columns) or data.height == 0:
+        raise ValueError("depth-comparison evidence has an invalid schema")
+    if data.select(list(required)).null_count().sum_horizontal().item() != 0:
+        raise ValueError("depth-comparison evidence contains nulls")
+    numeric = data.select(
+        "mean_delta", "confidence_lower", "confidence_upper"
+    ).to_numpy()
+    if not all(math.isfinite(float(value)) for value in numeric.flat):
+        raise ValueError("depth-comparison evidence contains non-finite values")
+    if bool((data["confidence_lower"] > data["confidence_upper"]).any()):
+        raise ValueError("depth-comparison evidence contains inverted intervals")
 
 
 def _validate_metric_table(
@@ -1195,6 +1340,10 @@ def _write_longitudinal_workbook(
     session_deltas: pl.DataFrame,
     stability: pl.DataFrame,
     locked_metrics: pl.DataFrame,
+    depth_development: pl.DataFrame,
+    depth_replication: pl.DataFrame,
+    depth_absolute: pl.DataFrame,
+    depth_deltas: pl.DataFrame,
 ) -> None:
     workbook = xlsxwriter.Workbook(path)
     workbook.set_properties(
@@ -1239,13 +1388,27 @@ def _write_longitudinal_workbook(
             name=name,
             data=data,
         )
+    for name, data in (
+        ("Depth Development", depth_development),
+        ("Depth March Replication", depth_replication),
+        ("Depth Absolute Metrics", depth_absolute),
+        ("Depth Session Deltas", depth_deltas),
+    ):
+        if data.height:
+            _write_frame_sheet(
+                workbook=workbook,
+                formats=formats,
+                name=name,
+                data=data,
+            )
     notes = pl.DataFrame(
         [
             {
                 "topic": "Forecasting task",
                 "detail": (
                     "Three-class EUR/USD direction prediction 30 seconds ahead "
-                    "from native 100-ms Level-1 reconstructed states."
+                    "from native 100-ms reconstructed states. Level 1 establishes "
+                    "the candidates; the matched depth extension tests Level 10."
                 ),
             },
             {
@@ -1342,7 +1505,12 @@ def _write_longitudinal_summary_sheet(
         ("Replication sessions", summary["replication_sessions"]),
         ("Native state interval", "100 milliseconds"),
         ("Forecast horizon", "30 seconds"),
-        ("Order-book depth", "Level 1"),
+        (
+            "Order-book depth",
+            "Level 1 plus matched Level 10 comparison"
+            if summary.get("depth_comparison_complete") is True
+            else "Level 1",
+        ),
         ("Minute aggregation", "No"),
         ("Confirmed candidates", summary["confirmed_candidates"]),
         ("Evidence status", "Retrospective replication; not pristine"),
