@@ -441,15 +441,11 @@ def _extract_deep_session(
     *,
     protocol: research_models.ResearchProtocol,
     identity: research_models.SessionIdentity,
-    output_dir: Path,
+    cache_dir: Path,
     horizon_steps: int,
 ) -> pilot_training.RawSessionData:
     """Return one Level-10 session from the extension-owned native cache."""
-    cache_path = (
-        output_dir
-        / "native_cache_level_10"
-        / f"{identity.trading_date.isoformat()}.parquet"
-    )
+    cache_path = cache_dir / f"{identity.trading_date.isoformat()}.parquet"
     states = pilot_operations.add_direction_targets(
         data=pl.read_parquet(cache_path), horizon_steps=(horizon_steps,)
     )
@@ -469,13 +465,14 @@ def _prepare_deep_corpora(
     horizon_steps: int,
 ) -> tuple[pilot_training.PreparedCorpus, pilot_training.PreparedCorpus]:
     """Prepare disk-backed Level-10 corpora within bounded host memory."""
+    cache_dir = output_dir / "native_cache_level_10"
     scaler = pilot_training.fit_feature_scaler(
         sessions=(
             session
             for _, session in _deep_sessions_with_progress(
                 protocol=protocol,
                 identities=fold.training_sessions,
-                output_dir=output_dir,
+                cache_dir=cache_dir,
                 horizon_steps=horizon_steps,
                 stage="fit-scaler",
             )
@@ -488,6 +485,7 @@ def _prepare_deep_corpora(
         protocol=protocol,
         identities=fold.training_sessions,
         output_dir=output_dir,
+        cache_dir=cache_dir,
         scaler=scaler,
         horizon_steps=horizon_steps,
         context_steps=context_steps,
@@ -502,6 +500,7 @@ def _prepare_deep_corpora(
         protocol=protocol,
         identities=fold.validation_sessions,
         output_dir=output_dir,
+        cache_dir=cache_dir,
         scaler=scaler,
         horizon_steps=horizon_steps,
         context_steps=context_steps,
@@ -520,6 +519,7 @@ def _prepare_memmap_corpus(
     protocol: research_models.ResearchProtocol,
     identities: tuple[research_models.SessionIdentity, ...],
     output_dir: Path,
+    cache_dir: Path,
     scaler: pilot_training.FeatureScaler,
     horizon_steps: int,
     context_steps: int,
@@ -534,7 +534,7 @@ def _prepare_memmap_corpus(
     for identity, session in _deep_sessions_with_progress(
         protocol=protocol,
         identities=identities,
-        output_dir=output_dir,
+        cache_dir=cache_dir,
         horizon_steps=horizon_steps,
         stage=f"plan-{name}",
     ):
@@ -601,7 +601,7 @@ def _prepare_memmap_corpus(
         raw = _extract_deep_session(
             protocol=protocol,
             identity=identity,
-            output_dir=output_dir,
+            cache_dir=cache_dir,
             horizon_steps=horizon_steps,
         )
         targets = _selected_targets(
@@ -694,7 +694,7 @@ def _deep_sessions_with_progress(
     *,
     protocol: research_models.ResearchProtocol,
     identities: tuple[research_models.SessionIdentity, ...],
-    output_dir: Path,
+    cache_dir: Path,
     horizon_steps: int,
     stage: str,
 ) -> Iterator[tuple[research_models.SessionIdentity, pilot_training.RawSessionData]]:
@@ -710,7 +710,7 @@ def _deep_sessions_with_progress(
             _extract_deep_session(
                 protocol=protocol,
                 identity=identity,
-                output_dir=output_dir,
+                cache_dir=cache_dir,
                 horizon_steps=horizon_steps,
             ),
         )
@@ -991,7 +991,11 @@ def _paired_depth_comparisons(
         for metric in (*protocol.primary_metrics, *protocol.supporting_metrics)
     )
     rows: list[dict[str, object]] = []
-    for model_position, model in enumerate(protocol.models):
+    available_models = set(metrics["model"].unique().to_list())
+    selected_models = tuple(
+        model for model in protocol.models if model in available_models
+    )
+    for model_position, model in enumerate(selected_models):
         shallow = averaged.filter(
             (pl.col("model") == model) & (pl.col("depth") == _SHALLOW_DEPTH)
         )
@@ -1194,6 +1198,12 @@ def _write_workbook(
     deltas: pl.DataFrame,
     training: pl.DataFrame,
     metrics: pl.DataFrame,
+    report_title: str = "EUR/USD — Level 1 vs Level 10",
+    design_description: str | None = None,
+    limitation: str = (
+        "Secondary development evidence. Locked outcomes were already inspected, "
+        "so this is not a new pristine final test."
+    ),
 ) -> None:
     supported_models = cast(list[str], decision["supported_models"])
     support_by_model = cast(
@@ -1247,7 +1257,7 @@ def _write_workbook(
     sheet.hide_gridlines(2)
     sheet.set_column("A:A", 29)
     sheet.set_column("B:B", 100)
-    sheet.merge_range("A1:B1", "EUR/USD — Level 1 vs Level 10", title)
+    sheet.merge_range("A1:B1", report_title, title)
     sheet.write_row("A3", ["Question", "Answer"], header)
     rows = [
         (
@@ -1272,7 +1282,8 @@ def _write_workbook(
         ),
         (
             "Design",
-            f"Same {fold_count} fold(s), {session_count} validation sessions, "
+            design_description
+            or f"Same {fold_count} fold(s), {session_count} validation sessions, "
             "2 models, and 2 random seeds for both depths.",
         ),
         (
@@ -1287,8 +1298,7 @@ def _write_workbook(
         ),
         (
             "Important limitation",
-            "Secondary development evidence. Locked outcomes were already "
-            "inspected, so this is not a new pristine final test.",
+            limitation,
         ),
         (
             "Economic interpretation",
@@ -1302,7 +1312,7 @@ def _write_workbook(
         sheet.write(row, 1, value, warning if label == "Important limitation" else text)
     start = len(rows) + 5
     sheet.write_row(start, 0, ["Model", "Depth improvement decision"], header)
-    for offset, model in enumerate(protocol.models, start=1):
+    for offset, model in enumerate(support_by_model, start=1):
         result = "PASS" if support_by_model[model] else "FAIL"
         sheet.write(start + offset, 0, model)
         sheet.write(start + offset, 1, result, passed if result == "PASS" else failed)

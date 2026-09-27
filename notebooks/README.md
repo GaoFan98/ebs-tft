@@ -23,7 +23,9 @@ The calendar boundary is fixed before this run:
 - March is not pristine evidence because its outcomes were inspected previously;
 - inputs remain native 100 ms reconstructed states with a causal 10-second context;
 - the target is the direction 30 seconds ahead;
-- only Level 1 is used because the completed depth extension did not support Level 10.
+- Level 1 establishes the forecasting candidates; a separate matched Level-10
+  extension tests whether levels 2–10 add information without changing the native
+  resolution, dates, models, seeds, horizon, or optimization policy.
 
 The 2023 delivery stores all symbols in one gzip per trading date. Normalize only
 EUR/USD into the canonical filename format before audit. This operation filters CSV
@@ -81,6 +83,40 @@ This study has four cells—not 64: one fixed calendar fold, one 30-second horiz
 one Level-1 input, two models, and two random seeds. The launcher pauses safely
 after all four new cells by default. Re-run the same command after an interruption;
 never add `--replace-output` when resuming.
+
+After the Level-1 development and March runs are complete, the matched Level-10
+development extension uses the same 182 training and 51 validation sessions:
+
+```bash
+uv run --no-sync ebs-tft research-depth-extension \
+  --config notebooks/research_2023_2024_protocol.yaml \
+  --policy notebooks/research_2023_2024_neural.yaml \
+  --maximum-new-cells 4
+```
+
+Once its decision is complete, freeze the March depth replication. The freeze step
+admits only models whose Level-10 improvement passed both primary metrics during
+development and fixes each seed's epoch count before running March:
+
+```bash
+uv run --no-sync ebs-tft research-freeze-depth-replication \
+  --config notebooks/research_2023_2024_protocol.yaml \
+  --policy notebooks/research_2023_2024_neural.yaml
+```
+
+Pass the printed hash verbatim to the resumable evaluator:
+
+```bash
+uv run --no-sync ebs-tft research-depth-replication \
+  --config notebooks/research_2023_2024_protocol.yaml \
+  --policy notebooks/research_2023_2024_neural.yaml \
+  --plan-sha256 PRINTED_SHA256 \
+  --maximum-new-cells 2
+```
+
+March is explicitly retrospective because its Level-1 outcomes were inspected
+earlier. The command cannot replace a completed run, and its decision cannot be
+used for retuning or another March rerun.
 
 ## Environment
 

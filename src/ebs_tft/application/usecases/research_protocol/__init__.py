@@ -34,6 +34,17 @@ from ebs_tft.application.usecases.research_protocol._depth_extension import (
 from ebs_tft.application.usecases.research_protocol._depth_extension import (
     run as run_depth_extension,
 )
+from ebs_tft.application.usecases.research_protocol._depth_replication import (
+    DepthReplicationPausedError,
+    DepthReplicationPlanResult,
+    DepthReplicationResult,
+)
+from ebs_tft.application.usecases.research_protocol._depth_replication import (
+    freeze_plan as freeze_depth_replication_plan,
+)
+from ebs_tft.application.usecases.research_protocol._depth_replication import (
+    run as run_depth_replication,
+)
 from ebs_tft.application.usecases.research_protocol._final_report import (
     FinalReportResult,
 )
@@ -97,6 +108,9 @@ __all__ = [
     "CrossInstrumentResult",
     "DepthExtensionPausedError",
     "DepthExtensionResult",
+    "DepthReplicationPausedError",
+    "DepthReplicationPlanResult",
+    "DepthReplicationResult",
     "FinalReportResult",
     "ModelProtocolVerificationResult",
     "NeuralBenchmarkResult",
@@ -122,6 +136,8 @@ __all__ = [
     "freeze_cross_instrument_plan",
     "run_cross_instrument_evaluation",
     "run_depth_extension",
+    "freeze_depth_replication_plan",
+    "run_depth_replication",
     "run_final_report",
     "run_temporal_audit",
     "freeze_temporal_evaluation_plan",

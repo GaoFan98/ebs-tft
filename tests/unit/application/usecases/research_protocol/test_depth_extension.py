@@ -69,6 +69,18 @@ def test_paired_depth_comparisons_respect_metric_direction() -> None:
     assert confidence_upper < 0
 
 
+def test_paired_depth_comparisons_allow_development_admitted_model_only() -> None:
+    protocol = _protocol()
+    metrics = _metrics(improvement=0.02).filter(pl.col("model") == "deeplob_direction")
+
+    actual = _depth_extension._paired_depth_comparisons(
+        metrics=metrics, protocol=protocol
+    )
+
+    assert actual.height == 5
+    assert actual["model"].unique().to_list() == ["deeplob_direction"]
+
+
 def test_depth_decision_requires_both_primary_metrics() -> None:
     protocol = _protocol()
     comparisons = _depth_extension._paired_depth_comparisons(

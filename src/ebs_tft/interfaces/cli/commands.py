@@ -348,6 +348,56 @@ def research_locked_evaluation(
         typer.echo(str(exc))
 
 
+@app.command("research-freeze-depth-replication")
+def research_freeze_depth_replication(
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
+    policy: Path = typer.Option(
+        Path("notebooks/research_neural_benchmark.yaml"), "--policy"
+    ),
+) -> None:
+    """Freeze the retrospective March Level-1 versus Level-10 replication."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_policy = research_protocol.load_policy(path=policy)
+    research_protocol.freeze_depth_replication_plan(
+        protocol=loaded_protocol,
+        protocol_path=config.resolve(),
+        policy=loaded_policy,
+        policy_path=policy.resolve(),
+    )
+
+
+@app.command("research-depth-replication")
+def research_depth_replication(
+    plan_sha256: str = typer.Option(
+        ..., "--plan-sha256", help="Exact SHA-256 printed by the freeze command."
+    ),
+    config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
+    policy: Path = typer.Option(
+        Path("notebooks/research_neural_benchmark.yaml"), "--policy"
+    ),
+    maximum_new_cells: int | None = typer.Option(
+        None,
+        "--maximum-new-cells",
+        min=1,
+        help="Pause after this many newly completed Level-10 replication cells.",
+    ),
+) -> None:
+    """Run the frozen retrospective March depth replication."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_policy = research_protocol.load_policy(path=policy)
+    try:
+        research_protocol.run_depth_replication(
+            protocol=loaded_protocol,
+            protocol_path=config.resolve(),
+            policy=loaded_policy,
+            policy_path=policy.resolve(),
+            plan_sha256=plan_sha256,
+            maximum_new_cells=maximum_new_cells,
+        )
+    except research_protocol.DepthReplicationPausedError as exc:
+        typer.echo(str(exc))
+
+
 @app.command("research-freeze-cross-instrument")
 def research_freeze_cross_instrument(
     config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),
