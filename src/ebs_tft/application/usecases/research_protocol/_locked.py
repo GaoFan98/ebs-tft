@@ -514,8 +514,10 @@ def _materialize_locked_cache(
     *,
     protocol: research_models.ResearchProtocol,
     sessions: tuple[research_models.SessionIdentity, ...],
+    cache_dir: Path | None = None,
+    log_prefix: str = "locked-evaluation",
 ) -> None:
-    cache_dir = protocol.output_dir / "locked_evaluation" / "native_cache"
+    cache_dir = cache_dir or protocol.output_dir / "locked_evaluation" / "native_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     for position, identity in enumerate(sessions, start=1):
         cache_path = cache_dir / f"{identity.trading_date.isoformat()}.parquet"
@@ -529,7 +531,7 @@ def _materialize_locked_cache(
                 f"locked native cache failed integrity check: {cache_path}"
             )
         print(
-            f"[locked-evaluation] reconstruct={position}/{len(sessions)} "
+            f"[{log_prefix}] reconstruct={position}/{len(sessions)} "
             f"date={identity.trading_date.isoformat()}",
             flush=True,
         )
@@ -565,13 +567,10 @@ def _extract_final_session(
     identity: research_models.SessionIdentity,
     depth: int,
     horizon_steps: int,
+    cache_dir: Path | None = None,
 ) -> pilot_training.RawSessionData:
-    cache_path = (
-        protocol.output_dir
-        / "locked_evaluation"
-        / "native_cache"
-        / f"{identity.trading_date.isoformat()}.parquet"
-    )
+    cache_dir = cache_dir or protocol.output_dir / "locked_evaluation" / "native_cache"
+    cache_path = cache_dir / f"{identity.trading_date.isoformat()}.parquet"
     states = pilot_operations.add_direction_targets(
         data=pl.read_parquet(cache_path), horizon_steps=(horizon_steps,)
     )
@@ -590,6 +589,7 @@ def _prepare_final_corpora(
     final_sessions: tuple[research_models.SessionIdentity, ...],
     depth: int,
     horizon_steps: int,
+    cache_dir: Path | None = None,
 ) -> tuple[pilot_training.PreparedCorpus, pilot_training.PreparedCorpus]:
     scaler = pilot_training.fit_feature_scaler(
         sessions=(
@@ -634,6 +634,7 @@ def _prepare_final_corpora(
                     identity=item,
                     depth=depth,
                     horizon_steps=horizon_steps,
+                    cache_dir=cache_dir,
                 ),
                 scaler=scaler,
             )

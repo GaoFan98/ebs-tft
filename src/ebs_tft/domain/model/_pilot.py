@@ -434,6 +434,21 @@ def set_random_seed(*, seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
+def _optimizer(
+    *, classifier: nn.Module, name: str, learning_rate: float, weight_decay: float
+) -> torch.optim.Optimizer:
+    """Keep historic AdamW behavior while allowing the paper's Adam optimizer."""
+    if name == "adamw":
+        return torch.optim.AdamW(
+            classifier.parameters(), lr=learning_rate, weight_decay=weight_decay
+        )
+    if name == "adam":
+        return torch.optim.Adam(
+            classifier.parameters(), lr=learning_rate, weight_decay=weight_decay
+        )
+    raise ValueError(f"unsupported optimizer: {name}")
+
+
 def fit_classifier(
     *,
     classifier: nn.Module,
@@ -454,6 +469,7 @@ def fit_classifier(
     resume_state: TrainingState | None = None,
     epoch_observer: Callable[[EpochMetric], None] | None = None,
     checkpoint_observer: Callable[[TrainingState], None] | None = None,
+    optimizer_name: str = "adamw",
 ) -> TrainingResult:
     """Fit one classifier, restore its best epoch, and return resumable state."""
     if isinstance(batch_size, bool) or batch_size <= 0:
@@ -469,8 +485,11 @@ def fit_classifier(
     fit_started = time.perf_counter()
     validation_elapsed_seconds = 0.0
     classifier.to(device)
-    optimizer = torch.optim.AdamW(
-        classifier.parameters(), lr=learning_rate, weight_decay=weight_decay
+    optimizer = _optimizer(
+        classifier=classifier,
+        name=optimizer_name,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
     )
     weight_tensor = (
         torch.from_numpy(class_weights).float().to(device)
@@ -640,6 +659,7 @@ def fit_classifier_fixed_epochs(
     resume_state: FixedTrainingState | None = None,
     epoch_observer: Callable[[FixedEpochMetric], None] | None = None,
     checkpoint_observer: Callable[[FixedTrainingState], None] | None = None,
+    optimizer_name: str = "adamw",
 ) -> FixedTrainingResult:
     """Fit for an immutable epoch count without consulting evaluation outcomes."""
     if isinstance(epochs, bool) or epochs <= 0:
@@ -648,8 +668,11 @@ def fit_classifier_fixed_epochs(
         raise ValueError("batch_size must be positive")
     started = time.perf_counter()
     classifier.to(device)
-    optimizer = torch.optim.AdamW(
-        classifier.parameters(), lr=learning_rate, weight_decay=weight_decay
+    optimizer = _optimizer(
+        classifier=classifier,
+        name=optimizer_name,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
     )
     loss_function = nn.CrossEntropyLoss()
     history: list[FixedEpochMetric] = []

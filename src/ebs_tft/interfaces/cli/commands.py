@@ -264,6 +264,37 @@ def research_neural_benchmark(
         typer.echo(str(exc))
 
 
+@app.command("research-paper-lstm")
+def research_paper_lstm(
+    stage: str = typer.Option(
+        "development", "--stage", help="development or retrospective replication."
+    ),
+    config: Path = typer.Option(
+        Path("notebooks/research_2023_2024_protocol.yaml"), "--config"
+    ),
+    policy: Path = typer.Option(
+        Path("notebooks/research_2023_2024_neural.yaml"), "--policy"
+    ),
+    maximum_new_cells: int | None = typer.Option(None, "--maximum-new-cells", min=1),
+) -> None:
+    """Compare a paper-inspired LSTM without changing completed study evidence."""
+    loaded_protocol = research_protocol.load_protocol(path=config)
+    loaded_policy = research_protocol.load_policy(path=policy)
+    try:
+        result = research_protocol.run_paper_lstm_comparison(
+            protocol=loaded_protocol,
+            protocol_path=config.resolve(),
+            policy=loaded_policy,
+            policy_path=policy.resolve(),
+            stage=stage,
+            maximum_new_cells=maximum_new_cells,
+        )
+    except research_protocol.PaperLstmPausedError as exc:
+        typer.echo(str(exc))
+        return
+    typer.echo(f"Paper-inspired LSTM {stage} completed: {result.output_dir}")
+
+
 @app.command("research-freeze-locked-evaluation")
 def research_freeze_locked_evaluation(
     config: Path = typer.Option(Path("notebooks/research_protocol.yaml"), "--config"),

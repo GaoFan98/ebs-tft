@@ -73,6 +73,13 @@ from ebs_tft.application.usecases.research_protocol._neural_config import (
     UnableToLoadNeuralBenchmarkPolicyError,
     load_policy,
 )
+from ebs_tft.application.usecases.research_protocol._paper_lstm import (
+    PaperLstmPausedError,
+    PaperLstmResult,
+)
+from ebs_tft.application.usecases.research_protocol._paper_lstm import (
+    run as run_paper_lstm_comparison,
+)
 from ebs_tft.application.usecases.research_protocol._temporal import (
     TemporalAuditResult,
     TemporalEvaluationPausedError,
@@ -115,6 +122,8 @@ __all__ = [
     "ModelProtocolVerificationResult",
     "NeuralBenchmarkResult",
     "NeuralBenchmarkPausedError",
+    "PaperLstmPausedError",
+    "PaperLstmResult",
     "UnableToLoadNeuralBenchmarkPolicyError",
     "LockedEvaluationPausedError",
     "LockedEvaluationPlanResult",
@@ -131,6 +140,7 @@ __all__ = [
     "run_baseline_gate",
     "run_model_protocol_verification",
     "run_neural_benchmark",
+    "run_paper_lstm_comparison",
     "freeze_locked_evaluation_plan",
     "run_locked_evaluation",
     "freeze_cross_instrument_plan",

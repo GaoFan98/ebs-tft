@@ -118,6 +118,60 @@ March is explicitly retrospective because its Level-1 outcomes were inspected
 earlier. The command cannot replace a completed run, and its decision cannot be
 used for retuning or another March rerun.
 
+## Ito et al. LSTM extension on the same native-resolution task
+
+`research-paper-lstm` is a **paper-inspired comparator**, not a numerical
+reproduction of Ito, Iima, and Kitamura (2022). Their published experiment
+aggregated 100 ms EBS observations to one-, two-, or three-minute inputs and
+used individual order-event categories that these end-of-slice files do not
+identify exactly. Do not compare their published accuracy directly with this
+study's 30-second macro F1 or MCC.
+A separate local paper audit can be kept under `reports/`; it is not required
+to run or package this comparison.
+
+This separate experiment keeps the established EUR/USD dates, 100 ms states,
+10-second context, 30-second target, Level 1, seeds 7/19, and target windows.
+It compares a single-layer 50-unit LSTM with (a) the same Level-1-plus-transaction
+features used by DeepLOB/TFT and (b) only the five available deal-flow features.
+Both variants use Adam, unweighted cross-entropy, and the existing fixed learning
+rate, batch size, and development-only early-stopping policy. Accuracy, macro F1,
+MCC, class scores, and paired session-bootstrap differences are recorded. The
+first run trains four development cells and never changes existing model outputs:
+
+```bash
+git pull --ff-only
+bash scripts/runpod/bootstrap.sh
+tmux new -s ebs-paper-lstm
+bash scripts/runpod/run_paper_lstm_comparison.sh development
+```
+
+When `development/run_summary.json` says `complete`, run the four fixed-epoch
+March cells. Their durations are frozen from each variant/seed's development
+best epoch before March data are loaded. March has already been inspected in the
+earlier study, so this is **retrospective replication**, not a pristine test:
+
+```bash
+bash scripts/runpod/run_paper_lstm_comparison.sh replication
+```
+
+Each launcher accepts an optional repository path and a maximum of 1–4 new
+cells, for example `bash scripts/runpod/run_paper_lstm_comparison.sh development
+/workspace/ebs-tft 1`. Re-run the same command after interruption; completed
+cells are verified and reused. Do not delete or replace the experiment output.
+Results live under `notebooks/research_2023_2024_outputs/paper_lstm_comparison/`.
+The `absolute_summary.csv` reports session-mean scores; `paired_comparisons.csv`
+reports Level-1-plus-trades minus trades-only and DeepLOB/TFT minus that LSTM.
+The latter is a matched-task model comparison, not a pure architecture effect:
+the paper-inspired LSTM uses Adam while the frozen DeepLOB/TFT runs used AdamW.
+It is also not a comparison against the article's historical 2018–2019 score.
+
+After both stages finish, package the evidence (excluding only the reconstructible
+March native cache) and copy the archive off the pod:
+
+```bash
+bash scripts/runpod/package_paper_lstm_evidence.sh
+```
+
 ## Environment
 
 Run commands from the repository root. Use only `uv`; do not create or activate a

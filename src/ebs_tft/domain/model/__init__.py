@@ -10,6 +10,10 @@ from ebs_tft.domain.model._evaluation import (
     normalized_probabilities,
     predict_defensive_baselines,
 )
+from ebs_tft.domain.model._paper_lstm import (
+    FEATURE_SETS as PAPER_LSTM_FEATURE_SETS,
+)
+from ebs_tft.domain.model._paper_lstm import PaperLstmDirectionClassifier
 from ebs_tft.domain.model._pilot import (
     MODEL_PROTOCOL_VERSION,
     DeepLobDirectionClassifier,
@@ -41,6 +45,8 @@ __all__ = [
     "FixedTrainingState",
     "MODEL_PROTOCOL_VERSION",
     "PredictionBatch",
+    "PAPER_LSTM_FEATURE_SETS",
+    "PaperLstmDirectionClassifier",
     "SequenceDataset",
     "TftDirectionClassifier",
     "TrainingDivergedError",
