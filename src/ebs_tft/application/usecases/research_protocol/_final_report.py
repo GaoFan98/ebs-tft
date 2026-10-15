@@ -11,6 +11,7 @@ from typing import cast
 
 import attrs
 import polars as pl
+import polars.testing as pl_testing
 import xlsxwriter
 
 from ebs_tft.application.usecases.research_protocol import (
@@ -19,6 +20,7 @@ from ebs_tft.application.usecases.research_protocol import (
     _depth_replication,
     _locked,
     _neural,
+    _paper_lstm,
 )
 from ebs_tft.data.repositories import artifact as artifact_repository
 from ebs_tft.domain.research import models as research_models
@@ -41,6 +43,67 @@ class FinalReportResult:
     report_path: Path
     locked_confirmed_candidates: int
     confirmed_cross_instrument_transfers: int
+
+
+@attrs.frozen
+class _PaperLstmEvidence:
+    """Verified paper-inspired LSTM tables for the longitudinal report."""
+
+    development_comparisons: pl.DataFrame
+    replication_comparisons: pl.DataFrame
+    development_absolute: pl.DataFrame
+    replication_absolute: pl.DataFrame
+    development_training: pl.DataFrame
+    replication_training: pl.DataFrame
+    replication_metrics: pl.DataFrame
+
+
+def _paper_lstm_primary_verdicts(*, evidence: _PaperLstmEvidence) -> pl.DataFrame:
+    """Summarize paired LSTM effects using both preregistered primary metrics."""
+    rows: list[dict[str, object]] = []
+    for stage, comparisons in (
+        ("development", evidence.development_comparisons),
+        ("replication", evidence.replication_comparisons),
+    ):
+        for comparison in sorted(set(comparisons["comparison"])):
+            pair = comparisons.filter(pl.col("comparison") == comparison)
+            effects = {
+                str(row["metric"]): row
+                for row in pair.filter(
+                    pl.col("metric").is_in(_PRIMARY_METRICS)
+                ).iter_rows(named=True)
+            }
+            if set(effects) != set(_PRIMARY_METRICS):
+                raise ValueError("paper-LSTM primary comparison is incomplete")
+            f1 = effects["macro_f1"]
+            mcc = effects["mcc"]
+            if all(effect["confidence_lower"] > 0 for effect in (f1, mcc)):
+                verdict = "supported candidate advantage"
+            elif all(effect["confidence_upper"] < 0 for effect in (f1, mcc)):
+                verdict = "supported reference advantage"
+            else:
+                verdict = "not established on both metrics"
+            rows.append(
+                {
+                    "stage": stage,
+                    "evidence_status": (
+                        "retrospective; March previously inspected"
+                        if stage == "replication"
+                        else "development validation"
+                    ),
+                    "candidate": f1["candidate"],
+                    "reference": f1["reference"],
+                    "sessions": f1["sessions"],
+                    "macro_f1_delta": f1["mean_delta"],
+                    "macro_f1_ci_lower": f1["confidence_lower"],
+                    "macro_f1_ci_upper": f1["confidence_upper"],
+                    "mcc_delta": mcc["mean_delta"],
+                    "mcc_ci_lower": mcc["confidence_lower"],
+                    "mcc_ci_upper": mcc["confidence_upper"],
+                    "joint_primary_verdict": verdict,
+                }
+            )
+    return pl.DataFrame(rows).sort("stage", "candidate", "reference")
 
 
 def run(
@@ -322,6 +385,21 @@ def _run_longitudinal(
             development_decision=depth_development_decision,
             replication_decision=depth_replication_decision,
         )
+    paper_lstm = (
+        _load_longitudinal_paper_lstm(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            paths=paths,
+            locked_metrics=locked_metrics,
+        )
+        if "paper_lstm_development_summary" in paths
+        else None
+    )
+    lstm_verdicts = (
+        _paper_lstm_primary_verdicts(evidence=paper_lstm)
+        if paper_lstm is not None
+        else pl.DataFrame()
+    )
 
     development = _stage_comparisons(
         data=neural_comparisons, stage="development_validation"
@@ -377,6 +455,19 @@ def _run_longitudinal(
                 "depth_replication_comparisons.csv": depth_replication,
                 "depth_replication_absolute_metrics.csv": depth_absolute,
                 "depth_replication_session_deltas.csv": depth_deltas,
+            }
+        )
+    if paper_lstm is not None:
+        outputs.update(
+            {
+                "lstm_primary_verdicts.csv": lstm_verdicts,
+                "lstm_development_comparisons.csv": paper_lstm.development_comparisons,
+                "lstm_replication_comparisons.csv": paper_lstm.replication_comparisons,
+                "lstm_development_absolute.csv": paper_lstm.development_absolute,
+                "lstm_replication_absolute.csv": paper_lstm.replication_absolute,
+                "lstm_development_training.csv": paper_lstm.development_training,
+                "lstm_replication_training.csv": paper_lstm.replication_training,
+                "lstm_replication_sessions.csv": paper_lstm.replication_metrics,
             }
         )
     for filename, data in outputs.items():
@@ -465,6 +556,20 @@ def _run_longitudinal(
                 ),
             }
         )
+    if paper_lstm is not None:
+        summary.update(
+            {
+                "paper_inspired_lstm_comparison_complete": True,
+                "paper_reproduction": False,
+                "paper_lstm_validation_sessions": _single_integer(
+                    paper_lstm.development_comparisons, column="sessions"
+                ),
+                "paper_lstm_march_sessions": _single_integer(
+                    paper_lstm.replication_comparisons, column="sessions"
+                ),
+                "paper_lstm_march_retrospective": True,
+            }
+        )
     _write_json(path=output_dir / "study_summary.json", value=summary)
     workbook_path = output_dir / "ebs_tft_2023_2024_longitudinal_analysis.xlsx"
     _write_longitudinal_workbook(
@@ -486,6 +591,8 @@ def _run_longitudinal(
         depth_replication=depth_replication,
         depth_absolute=depth_absolute,
         depth_deltas=depth_deltas,
+        paper_lstm=paper_lstm,
+        lstm_verdicts=lstm_verdicts,
     )
     _write_json(
         path=output_dir / "run_summary.json",
@@ -574,6 +681,22 @@ def _longitudinal_required_paths(*, source_root: Path) -> dict[str, Path]:
                 "depth_replication_deltas": (replication / "session_depth_deltas.csv"),
             }
         )
+    paper_lstm = source_root / "paper_lstm_comparison"
+    if paper_lstm.exists():
+        paths["paper_lstm_development_reference"] = neural / "session_metrics.csv"
+        for stage in ("development", "replication"):
+            stage_root = paper_lstm / stage
+            for key, filename in (
+                ("summary", "run_summary.json"),
+                ("identity", "run_identity.json"),
+                ("metrics", "session_metrics.csv"),
+                ("comparisons", "paired_comparisons.csv"),
+                ("absolute", "absolute_summary.csv"),
+                ("training", "training_details.csv"),
+                ("workbook", "paper_lstm_comparison.xlsx"),
+            ):
+                paths[f"paper_lstm_{stage}_{key}"] = stage_root / filename
+        paths["paper_lstm_replication_plan"] = paper_lstm / "replication" / "plan.json"
     return paths
 
 
@@ -607,6 +730,146 @@ def _verify_longitudinal_depth_evidence(
         raise ValueError("depth replication unexpectedly permits retuning")
     if _string(summary, "plan_sha256") != _sha256(paths["depth_replication_plan"]):
         raise ValueError("depth replication plan hash mismatch")
+
+
+def _load_longitudinal_paper_lstm(
+    *,
+    protocol: research_models.ResearchProtocol,
+    protocol_path: Path,
+    paths: dict[str, Path],
+    locked_metrics: pl.DataFrame,
+) -> _PaperLstmEvidence:
+    """Load and verify the optional matched-task paper-inspired LSTM evidence."""
+    policy_path = protocol_path.with_name("research_2023_2024_neural.yaml")
+    if not policy_path.is_file():
+        raise FileNotFoundError(f"missing paper-LSTM policy: {policy_path}")
+    reference_by_stage = {
+        "development": _read_csv(paths["paper_lstm_development_reference"]),
+        "replication": locked_metrics.filter(pl.col("model").is_in(protocol.models)),
+    }
+    frames: dict[str, pl.DataFrame] = {}
+    for stage, reference in reference_by_stage.items():
+        prefix = f"paper_lstm_{stage}_"
+        summary = _json_mapping(paths[prefix + "summary"])
+        identity = _json_mapping(paths[prefix + "identity"])
+        if (
+            summary.get("status") != "complete"
+            or summary.get("stage") != stage
+            or summary.get("paper_reproduction") is not False
+            or summary.get("minute_aggregation_used") is not False
+            or summary.get("retrospective_march") is not (stage == "replication")
+            or summary.get("retuning_permitted") is not False
+            or _integer(summary, "cells") != 4
+            or _integer(summary, "sessions")
+            != reference.select("validation_date").n_unique()
+        ):
+            raise ValueError(f"paper-LSTM {stage} summary is incomplete or mislabelled")
+        expected_identity_hashes = {
+            "protocol_sha256": _sha256(protocol_path),
+            "policy_sha256": _sha256(policy_path),
+            "manifest_sha256": _sha256(paths["split_manifest"]),
+            "audit_sha256": _sha256(paths["session_audit"]),
+            "reference_metrics_sha256": _sha256(
+                paths["paper_lstm_development_reference"]
+                if stage == "development"
+                else paths["locked_metrics"]
+            ),
+        }
+        if (
+            identity.get("stage") != stage
+            or identity.get("paper_reproduction") is not False
+            or identity.get("training_data_semantics")
+            != "native_100ms_snapshots_not_order_events"
+            or any(
+                identity.get(key) != value
+                for key, value in expected_identity_hashes.items()
+            )
+            or summary.get("identity_sha256") != _sha256(paths[prefix + "identity"])
+        ):
+            raise ValueError(
+                f"paper-LSTM {stage} identity differs from source evidence"
+            )
+        for key, summary_key in (
+            ("metrics", "metrics_sha256"),
+            ("comparisons", "comparisons_sha256"),
+            ("absolute", "absolute_summary_sha256"),
+            ("training", "training_details_sha256"),
+            ("workbook", "workbook_sha256"),
+        ):
+            if summary.get(summary_key) != _sha256(paths[prefix + key]):
+                raise ValueError(f"paper-LSTM {stage} {key} checksum mismatch")
+        metrics = _read_csv(paths[prefix + "metrics"])
+        comparisons = _read_csv(paths[prefix + "comparisons"])
+        absolute = _read_csv(paths[prefix + "absolute"])
+        training = _read_csv(paths[prefix + "training"])
+        _paper_lstm._verify_sample_alignment(metrics=metrics, reference=reference)
+        _verify_lstm_table(
+            actual=comparisons,
+            expected=_paper_lstm._comparisons(
+                metrics=metrics,
+                reference=reference,
+                protocol=protocol,
+                stage=stage,
+            ),
+            label=f"{stage} paired comparisons",
+        )
+        _verify_lstm_table(
+            actual=absolute,
+            expected=_paper_lstm._absolute_summary(
+                metrics=metrics, reference=reference
+            ),
+            label=f"{stage} absolute scores",
+        )
+        if (
+            training.height != 4
+            or set(training["feature_set"])
+            != {
+                "level_1_and_transactions",
+                "transactions_only",
+            }
+            or set(training["seed"]) != {7, 19}
+        ):
+            raise ValueError(f"paper-LSTM {stage} training cells are incomplete")
+        frames[prefix + "metrics"] = metrics
+        frames[prefix + "comparisons"] = comparisons
+        frames[prefix + "absolute"] = absolute
+        frames[prefix + "training"] = training
+
+    plan = _json_mapping(paths["paper_lstm_replication_plan"])
+    if (
+        plan.get("retrospective_not_pristine") is not True
+        or plan.get("development_summary_sha256")
+        != _sha256(paths["paper_lstm_development_summary"])
+        or plan.get("replication_dates")
+        != sorted(set(frames["paper_lstm_replication_metrics"]["validation_date"]))
+    ):
+        raise ValueError("paper-LSTM March plan does not match frozen development")
+    return _PaperLstmEvidence(
+        development_comparisons=frames["paper_lstm_development_comparisons"],
+        replication_comparisons=frames["paper_lstm_replication_comparisons"],
+        development_absolute=frames["paper_lstm_development_absolute"],
+        replication_absolute=frames["paper_lstm_replication_absolute"],
+        development_training=frames["paper_lstm_development_training"],
+        replication_training=frames["paper_lstm_replication_training"],
+        replication_metrics=frames["paper_lstm_replication_metrics"],
+    )
+
+
+def _verify_lstm_table(
+    *, actual: pl.DataFrame, expected: pl.DataFrame, label: str
+) -> None:
+    """Reject a reported LSTM table that differs from its session-level inputs."""
+    try:
+        pl_testing.assert_frame_equal(
+            actual,
+            expected,
+            check_exact=False,
+            check_dtypes=False,
+            rel_tol=1e-10,
+            abs_tol=1e-12,
+        )
+    except AssertionError as exc:
+        raise ValueError(f"paper-LSTM {label} differs from session evidence") from exc
 
 
 def _verify_longitudinal_evidence(
@@ -1344,6 +1607,8 @@ def _write_longitudinal_workbook(
     depth_replication: pl.DataFrame,
     depth_absolute: pl.DataFrame,
     depth_deltas: pl.DataFrame,
+    paper_lstm: _PaperLstmEvidence | None,
+    lstm_verdicts: pl.DataFrame,
 ) -> None:
     workbook = xlsxwriter.Workbook(path)
     workbook.set_properties(
@@ -1401,6 +1666,60 @@ def _write_longitudinal_workbook(
                 name=name,
                 data=data,
             )
+    if paper_lstm is not None:
+        for name, data in (
+            ("LSTM Primary Verdicts", lstm_verdicts),
+            ("LSTM March Scores", paper_lstm.replication_absolute),
+            ("LSTM March Effects", paper_lstm.replication_comparisons),
+            ("LSTM Validation Scores", paper_lstm.development_absolute),
+            ("LSTM Validation Effects", paper_lstm.development_comparisons),
+            ("LSTM March Training", paper_lstm.replication_training),
+            ("LSTM Validation Training", paper_lstm.development_training),
+            ("LSTM March Sessions", paper_lstm.replication_metrics),
+        ):
+            _write_frame_sheet(
+                workbook=workbook,
+                formats=formats,
+                name=name,
+                data=data,
+            )
+        interpretation = pl.DataFrame(
+            [
+                {
+                    "comparison": f"{row['candidate']} minus {row['reference']}",
+                    "period": row["stage"],
+                    "finding": row["joint_primary_verdict"],
+                    "qualification": row["evidence_status"],
+                }
+                for row in lstm_verdicts.iter_rows(named=True)
+            ]
+            + [
+                {
+                    "comparison": "Published Ito et al. result",
+                    "period": "different study",
+                    "finding": "not directly comparable",
+                    "qualification": (
+                        "The published input was minute-aggregated event data; "
+                        "this study uses native 100-ms states and a 30-second target."
+                    ),
+                },
+                {
+                    "comparison": "Publication claim",
+                    "period": "future work",
+                    "finding": "requires untouched later data",
+                    "qualification": (
+                        "Four previously inspected March sessions do not constitute "
+                        "a pristine confirmation, and no trading P&L was tested."
+                    ),
+                },
+            ]
+        )
+        _write_frame_sheet(
+            workbook=workbook,
+            formats=formats,
+            name="LSTM Interpretation",
+            data=interpretation,
+        )
     notes = pl.DataFrame(
         [
             {
@@ -1446,6 +1765,33 @@ def _write_longitudinal_workbook(
             },
         ]
     )
+    if paper_lstm is not None:
+        notes = pl.concat(
+            [
+                notes,
+                pl.DataFrame(
+                    [
+                        {
+                            "topic": "Paper-inspired LSTM",
+                            "detail": (
+                                "Matched 100-ms, 30-second EUR/USD task with a "
+                                "single-layer 50-unit LSTM; not an exact "
+                                "reproduction of Ito et al.'s minute-aggregated "
+                                "event-feature study."
+                            ),
+                        },
+                        {
+                            "topic": "LSTM inference",
+                            "detail": (
+                                "Only same-data paired session-bootstrap effects "
+                                "may support a model comparison. The four March "
+                                "sessions were previously inspected."
+                            ),
+                        },
+                    ]
+                ),
+            ]
+        )
     _write_frame_sheet(
         workbook=workbook,
         formats=formats,
@@ -1480,7 +1826,7 @@ def _write_longitudinal_summary_sheet(
         "against the same-data logistic reference.",
         formats["subtitle"],
     )
-    rows = (
+    rows: tuple[tuple[str, object], ...] = (
         ("Conclusion", summary["headline_conclusion"]),
         (
             "Interpretation",
@@ -1516,6 +1862,14 @@ def _write_longitudinal_summary_sheet(
         ("Evidence status", "Retrospective replication; not pristine"),
         ("Retuning permitted", "No"),
     )
+    if summary.get("paper_inspired_lstm_comparison_complete") is True:
+        rows += (
+            (
+                "LSTM comparator",
+                "Included: see LSTM March Scores and LSTM March Effects; "
+                "paper-inspired, not an exact reproduction.",
+            ),
+        )
     sheet.write_row(3, 0, ("Study scope", "Value"), formats["header"])
     sheet.merge_range(3, 1, 3, 13, "Value", formats["header"])
     for row_index, (label, value) in enumerate(rows, start=4):

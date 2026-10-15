@@ -19,6 +19,7 @@ from ebs_tft.application.usecases.research_protocol import (
     _final_report,
     _locked,
     _neural,
+    _paper_lstm,
 )
 from ebs_tft.domain.research import models as research_models
 
@@ -163,6 +164,79 @@ def test_longitudinal_paths_require_completed_depth_replication(
     paths = _final_report._longitudinal_required_paths(source_root=tmp_path)
     assert paths["depth_replication_summary"] == replication / "run_summary.json"
     assert "depth_development_comparisons" in paths
+
+
+def test_longitudinal_report_includes_verified_paper_lstm(tmp_path: Path) -> None:
+    protocol_path = Path("notebooks/research_2023_2024_protocol.yaml").resolve()
+    protocol = attrs.evolve(
+        research_protocol.load_protocol(path=protocol_path),
+        output_dir=tmp_path / "longitudinal_evidence",
+    )
+    _write_longitudinal_evidence(root=protocol.output_dir, protocol_path=protocol_path)
+    _write_longitudinal_depth_evidence(root=protocol.output_dir, protocol=protocol)
+    _write_longitudinal_paper_lstm_evidence(
+        root=protocol.output_dir,
+        protocol=protocol,
+        protocol_path=protocol_path,
+    )
+    output = tmp_path / "report"
+
+    research_protocol.run_final_report(
+        protocol=protocol,
+        protocol_path=protocol_path,
+        output_dir=output,
+        replace_output=False,
+    )
+
+    with zipfile.ZipFile(
+        output / "ebs_tft_2023_2024_longitudinal_analysis.xlsx"
+    ) as archive:
+        workbook_xml = archive.read("xl/workbook.xml").decode()
+    assert "LSTM March Scores" in workbook_xml
+    assert "LSTM March Effects" in workbook_xml
+    assert "LSTM Primary Verdicts" in workbook_xml
+    assert "LSTM Interpretation" in workbook_xml
+    assert "LSTM Validation Effects" in workbook_xml
+    assert "LSTM March Training" in workbook_xml
+    assert (output / "lstm_replication_comparisons.csv").is_file()
+    assert pl.read_csv(output / "lstm_primary_verdicts.csv").height == 6
+    summary = json.loads((output / "study_summary.json").read_text())
+    assert summary["paper_inspired_lstm_comparison_complete"] is True
+    assert summary["paper_reproduction"] is False
+    assert summary["paper_lstm_march_retrospective"] is True
+    assert summary["paper_lstm_validation_sessions"] == 2
+    assert summary["paper_lstm_march_sessions"] == 4
+
+
+def test_longitudinal_report_refuses_modified_paper_lstm_results(
+    tmp_path: Path,
+) -> None:
+    protocol_path = Path("notebooks/research_2023_2024_protocol.yaml").resolve()
+    protocol = attrs.evolve(
+        research_protocol.load_protocol(path=protocol_path),
+        output_dir=tmp_path / "longitudinal_evidence",
+    )
+    _write_longitudinal_evidence(root=protocol.output_dir, protocol_path=protocol_path)
+    _write_longitudinal_paper_lstm_evidence(
+        root=protocol.output_dir,
+        protocol=protocol,
+        protocol_path=protocol_path,
+    )
+    comparison_path = (
+        protocol.output_dir
+        / "paper_lstm_comparison"
+        / "replication"
+        / "paired_comparisons.csv"
+    )
+    comparison_path.write_text(comparison_path.read_text() + "\n")
+
+    with pytest.raises(ValueError, match="comparisons checksum mismatch"):
+        research_protocol.run_final_report(
+            protocol=protocol,
+            protocol_path=protocol_path,
+            output_dir=tmp_path / "report",
+            replace_output=False,
+        )
 
 
 def _write_evidence(*, root: Path, protocol_path: Path) -> None:
@@ -408,6 +482,146 @@ def _write_longitudinal_depth_evidence(
     )
     replication_comparisons.write_csv(replication / "absolute_metric_summary.csv")
     replication_comparisons.write_csv(replication / "session_depth_deltas.csv")
+
+
+def _write_longitudinal_paper_lstm_evidence(
+    *,
+    root: Path,
+    protocol: research_models.ResearchProtocol,
+    protocol_path: Path,
+) -> None:
+    paper_root = root / "paper_lstm_comparison"
+    development_dates = ("2024-01-02", "2024-01-03")
+    replication_dates = ("2024-03-06", "2024-03-13", "2024-03-20", "2024-03-27")
+    locked_metrics_path = root / "locked_evaluation" / "session_metrics.csv"
+    locked_metrics = pl.read_csv(locked_metrics_path).with_columns(
+        pl.col("balanced_accuracy").alias("accuracy")
+    )
+    locked_metrics.write_csv(locked_metrics_path)
+    development_reference = pl.DataFrame(
+        [
+            {
+                "model": model,
+                "seed": seed,
+                "validation_date": date,
+                "observations": 1_000 + index,
+                "accuracy": score,
+                "macro_f1": score,
+                "mcc": score - 0.2,
+            }
+            for index, date in enumerate(development_dates)
+            for model, score in (
+                ("deeplob_direction", 0.36),
+                ("tft_direction", 0.37),
+            )
+            for seed in (7, 19)
+        ]
+    )
+    development_reference_path = root / "neural_benchmark" / "session_metrics.csv"
+    development_reference.write_csv(development_reference_path)
+    references = {
+        "development": development_reference,
+        "replication": locked_metrics.filter(pl.col("model").is_in(protocol.models)),
+    }
+    for stage, reference in references.items():
+        stage_root = paper_root / stage
+        stage_root.mkdir(parents=True)
+        dates = development_dates if stage == "development" else replication_dates
+        metrics = pl.DataFrame(
+            [
+                {
+                    "feature_set": feature_set,
+                    "seed": seed,
+                    "validation_date": date,
+                    "observations": 1_000 + index,
+                    "accuracy": score,
+                    "macro_f1": score,
+                    "mcc": score - 0.2,
+                }
+                for index, date in enumerate(dates)
+                for feature_set, score in (
+                    ("level_1_and_transactions", 0.365),
+                    ("transactions_only", 0.30),
+                )
+                for seed in (7, 19)
+            ]
+        )
+        comparisons = _paper_lstm._comparisons(
+            metrics=metrics,
+            reference=reference,
+            protocol=protocol,
+            stage=stage,
+        )
+        absolute = _paper_lstm._absolute_summary(metrics=metrics, reference=reference)
+        training = pl.DataFrame(
+            [
+                {
+                    "feature_set": feature_set,
+                    "seed": seed,
+                    "epochs": 2,
+                    "training_windows": 100,
+                    "evaluation_windows": 1_000 * len(dates),
+                    "parameter_count": 11_000,
+                    "fit_elapsed_seconds": 1.0,
+                }
+                for feature_set in (
+                    "level_1_and_transactions",
+                    "transactions_only",
+                )
+                for seed in (7, 19)
+            ]
+        )
+        metrics.write_csv(stage_root / "session_metrics.csv")
+        comparisons.write_csv(stage_root / "paired_comparisons.csv")
+        absolute.write_csv(stage_root / "absolute_summary.csv")
+        training.write_csv(stage_root / "training_details.csv")
+        (stage_root / "paper_lstm_comparison.xlsx").write_bytes(b"fixture")
+        identity = {
+            "stage": stage,
+            "paper_reproduction": False,
+            "training_data_semantics": "native_100ms_snapshots_not_order_events",
+            "protocol_sha256": _sha256(protocol_path),
+            "policy_sha256": _sha256(
+                protocol_path.with_name("research_2023_2024_neural.yaml")
+            ),
+            "manifest_sha256": _sha256(root / "split_manifest.yaml"),
+            "audit_sha256": _sha256(root / "session_audit.csv"),
+            "reference_metrics_sha256": _sha256(
+                development_reference_path
+                if stage == "development"
+                else locked_metrics_path
+            ),
+        }
+        _write_json(stage_root / "run_identity.json", identity)
+        _write_json(
+            stage_root / "run_summary.json",
+            {
+                "status": "complete",
+                "stage": stage,
+                "paper_reproduction": False,
+                "minute_aggregation_used": False,
+                "retrospective_march": stage == "replication",
+                "retuning_permitted": False,
+                "cells": 4,
+                "sessions": len(dates),
+                "identity_sha256": _sha256(stage_root / "run_identity.json"),
+                "metrics_sha256": _sha256(stage_root / "session_metrics.csv"),
+                "comparisons_sha256": _sha256(stage_root / "paired_comparisons.csv"),
+                "absolute_summary_sha256": _sha256(stage_root / "absolute_summary.csv"),
+                "training_details_sha256": _sha256(stage_root / "training_details.csv"),
+                "workbook_sha256": _sha256(stage_root / "paper_lstm_comparison.xlsx"),
+            },
+        )
+    _write_json(
+        paper_root / "replication" / "plan.json",
+        {
+            "retrospective_not_pristine": True,
+            "development_summary_sha256": _sha256(
+                paper_root / "development" / "run_summary.json"
+            ),
+            "replication_dates": list(replication_dates),
+        },
+    )
 
 
 def _depth_comparison_row(

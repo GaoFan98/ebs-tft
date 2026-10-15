@@ -466,8 +466,14 @@ uv run --no-sync ebs-tft research-final-report \
 
 This report labels March as retrospective replication because those dates were
 inspected in the earlier study. It cannot train, select, tune, or reevaluate a
-model. When the longitudinal Level-10 development comparison is complete, freeze
-its supported models before reading the matched March depth outcomes:
+model. If both paper-inspired LSTM stages are complete in the same output tree,
+the report also verifies their source hashes and session-level comparisons, then
+adds matched LSTM scores, paired effects, training details, and interpretation to
+the workbook. It labels this as a task-matched comparator, not an exact
+reproduction of Ito et al.; a pristine later-period test is still needed for a
+new confirmatory claim. When the longitudinal Level-10 development comparison is
+complete, freeze its supported models before reading the matched March depth
+outcomes:
 
 ```bash
 uv run --no-sync ebs-tft research-freeze-depth-replication \
